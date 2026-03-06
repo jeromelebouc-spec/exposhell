@@ -100,10 +100,26 @@ function parseHeartRateMeasurement(base64: string) {
   const bytes = base64ToBytes(base64);
   const flags = bytes[0];
   const formatUint16 = (flags & 0x01) !== 0;
-  const hr = formatUint16
-    ? bytes[1] | (bytes[2] << 8)
-    : bytes[1];
-  return { heartRate: hr, flags };
+
+  let offset = 1;
+  const heartRate = formatUint16
+    ? bytes[offset] | (bytes[offset + 1] << 8)
+    : bytes[offset];
+  offset += formatUint16 ? 2 : 1;
+
+  // If bit 3 is set, RR-Interval values follow (uint16, units 1/1024s).
+  const hasRr = (flags & 0x10) !== 0;
+  const rrIntervals: number[] = [];
+  if (hasRr) {
+    while (offset + 1 < bytes.length) {
+      const raw = bytes[offset] | (bytes[offset + 1] << 8);
+      const ms = (raw * 1000) / 1024;
+      rrIntervals.push(ms);
+      offset += 2;
+    }
+  }
+
+  return { heartRate, flags, rrIntervals };
 }
 
 function parseCyclingPowerMeasurement(base64: string) {
@@ -120,6 +136,16 @@ function formatPace(speedMps: number | null) {
   const mins = Math.floor(minutesPerKm);
   const secs = Math.round((minutesPerKm - mins) * 60);
   return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
+function computeRmssd(rrIntervals: number[]) {
+  if (rrIntervals.length < 2) return null;
+  const diffs = rrIntervals
+    .slice(1)
+    .map((v, i) => v - rrIntervals[i])
+    .map((d) => d * d);
+  const mean = diffs.reduce((sum, v) => sum + v, 0) / diffs.length;
+  return Math.sqrt(mean);
 }
 
 async function requestBlePermissions() {
@@ -160,12 +186,14 @@ export default function Index() {
     cadence: null as number | null,
     heartRate: null as number | null,
     power: null as number | null,
+    rmssd: null as number | null,
   });
+  const [rrHistory, setRrHistory] = useState<number[]>([]);
   const [activeServices, setActiveServices] = useState<string[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
 
   const resetTelemetry = () =>
-    setTelemetry({ speed: null, cadence: null, heartRate: null, power: null });
+    setTelemetry({ speed: null, cadence: null, heartRate: null, power: null, rmssd: null });
 
   const appendLog = (message: string) => {
     setLogs((prev) => {
@@ -284,14 +312,27 @@ export default function Index() {
       "Cycling Speed/Cadence",
     );
 
-    // Heart Rate
+    // Heart Rate (includes optional RR-intervals for HRV)
     subscribe(
       "0000180d-0000-1000-8000-00805f9b34fb",
       "00002a37-0000-1000-8000-00805f9b34fb",
       (value) => {
-        const { heartRate } = parseHeartRateMeasurement(value);
+        const { heartRate, rrIntervals } = parseHeartRateMeasurement(value);
         setTelemetry((prev) => ({ ...prev, heartRate }));
-        appendLog(`HR ⇒ ${heartRate} bpm`);
+
+        if (rrIntervals?.length) {
+          setRrHistory((prev) => {
+            const next = [...rrIntervals, ...prev].slice(0, 64);
+            const rmssd = computeRmssd(next);
+            setTelemetry((t) => ({ ...t, rmssd }));
+            return next;
+          });
+          appendLog(
+            `HRV ⇒ rr=${rrIntervals.map((r) => r.toFixed(0)).join(",")} ms`,
+          );
+        } else {
+          appendLog(`HR ⇒ ${heartRate} bpm`);
+        }
       },
       "Heart Rate",
     );
@@ -493,6 +534,12 @@ export default function Index() {
           <Text style={styles.telemetryLabel}>Heart rate</Text>
           <Text style={styles.telemetryValue}>
             {telemetry.heartRate != null ? `${telemetry.heartRate} bpm` : "–"}
+          </Text>
+        </View>
+        <View style={styles.telemetryRow}>
+          <Text style={styles.telemetryLabel}>HRV (RMSSD)</Text>
+          <Text style={styles.telemetryValue}>
+            {telemetry.rmssd != null ? `${telemetry.rmssd.toFixed(0)} ms` : "–"}
           </Text>
         </View>
       </View>
