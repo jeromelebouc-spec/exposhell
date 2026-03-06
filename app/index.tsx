@@ -25,6 +25,103 @@ async function hasAndroidBlePermissions() {
   return scan && connect;
 }
 
+function base64ToBytes(base64: string) {
+  // Pure JS base64 decode (works in React Native without Buffer/atob).
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const lookup = new Uint8Array(256);
+  for (let i = 0; i < chars.length; i += 1) {
+    lookup[chars.charCodeAt(i)] = i;
+  }
+
+  const len = base64.length;
+  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
+  const bytes = new Uint8Array(((len * 3) / 4) - padding);
+
+  let p = 0;
+  for (let i = 0; i < len; i += 4) {
+    const encoded1 = lookup[base64.charCodeAt(i)];
+    const encoded2 = lookup[base64.charCodeAt(i + 1)];
+    const encoded3 = lookup[base64.charCodeAt(i + 2)];
+    const encoded4 = lookup[base64.charCodeAt(i + 3)];
+
+    const byte1 = (encoded1 << 2) | (encoded2 >> 4);
+    bytes[p++] = byte1;
+
+    if (p < bytes.length) {
+      const byte2 = ((encoded2 & 15) << 4) | (encoded3 >> 2);
+      bytes[p++] = byte2;
+    }
+
+    if (p < bytes.length) {
+      const byte3 = ((encoded3 & 3) << 6) | encoded4;
+      bytes[p++] = byte3;
+    }
+  }
+
+  return bytes;
+}
+
+function parseRSCMeasurement(base64: string) {
+  const bytes = base64ToBytes(base64);
+  const flags = bytes[0];
+  const speed = (bytes[1] | (bytes[2] << 8)) / 256; // m/s
+  const cadence = bytes[3];
+  return { speed, cadence, flags };
+}
+
+function parseCSCMeasurement(base64: string) {
+  const bytes = base64ToBytes(base64);
+  const flags = bytes[0];
+  let cadence: number | null = null;
+  let wheelRevs: number | null = null;
+
+  let offset = 1;
+  const hasWheel = (flags & 0x01) !== 0;
+  const hasCrank = (flags & 0x02) !== 0;
+
+  if (hasWheel) {
+    wheelRevs =
+      bytes[offset] |
+      (bytes[offset + 1] << 8) |
+      (bytes[offset + 2] << 16) |
+      (bytes[offset + 3] << 24);
+    offset += 4;
+    offset += 2; // wheel event time (ignored)
+  }
+
+  if (hasCrank) {
+    cadence = bytes[offset] | (bytes[offset + 1] << 8);
+  }
+
+  return { cadence, wheelRevs, flags };
+}
+
+function parseHeartRateMeasurement(base64: string) {
+  const bytes = base64ToBytes(base64);
+  const flags = bytes[0];
+  const formatUint16 = (flags & 0x01) !== 0;
+  const hr = formatUint16
+    ? bytes[1] | (bytes[2] << 8)
+    : bytes[1];
+  return { heartRate: hr, flags };
+}
+
+function parseCyclingPowerMeasurement(base64: string) {
+  const bytes = base64ToBytes(base64);
+  // flags uint16
+  const power = (bytes[2] | (bytes[3] << 8));
+  return { power, flags: bytes[0] | (bytes[1] << 8) };
+}
+
+function formatPace(speedMps: number | null) {
+  if (!speedMps || speedMps <= 0) return "–";
+  const kmh = speedMps * 3.6;
+  const minutesPerKm = 60 / kmh;
+  const mins = Math.floor(minutesPerKm);
+  const secs = Math.round((minutesPerKm - mins) * 60);
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
 async function requestBlePermissions() {
   if (Platform.OS !== "android") return true;
 
@@ -46,15 +143,48 @@ async function requestBlePermissions() {
 
 export default function Index() {
   const manager = useRef<BleManager | null>(null);
+  const subscriptions = useRef<Record<string, any>>({});
+  const lastDeviceRef = useRef<Device | null>(null);
+  const manualDisconnectRef = useRef(false);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttempts = useRef(0);
+
   const [devices, setDevices] = useState<Device[]>([]);
   const [scanning, setScanning] = useState(false);
   const [connectingId, setConnectingId] = useState<string | null>(null);
   const [connectedId, setConnectedId] = useState<string | null>(null);
+  const [connectedName, setConnectedName] = useState<string | null>(null);
+  const [autoReconnect, setAutoReconnect] = useState(true);
+  const [telemetry, setTelemetry] = useState({
+    speed: null as number | null,
+    cadence: null as number | null,
+    heartRate: null as number | null,
+    power: null as number | null,
+  });
+  const [activeServices, setActiveServices] = useState<string[]>([]);
+  const [logs, setLogs] = useState<string[]>([]);
+
+  const resetTelemetry = () =>
+    setTelemetry({ speed: null, cadence: null, heartRate: null, power: null });
+
+  const appendLog = (message: string) => {
+    setLogs((prev) => {
+      const next = [`${new Date().toLocaleTimeString()}: ${message}`, ...prev];
+      return next.slice(0, 60);
+    });
+  };
+
+  const cleanupSubscriptions = () => {
+    Object.values(subscriptions.current).forEach((sub) => sub?.remove());
+    subscriptions.current = {};
+  };
 
   useEffect(() => {
     manager.current = new BleManager();
 
     return () => {
+      cleanupSubscriptions();
+      reconnectTimeoutRef.current && clearTimeout(reconnectTimeoutRef.current);
       manager.current?.destroy();
     };
   }, []);
@@ -76,7 +206,15 @@ export default function Index() {
     resetDevices();
     setScanning(true);
 
-    manager.current?.startDeviceScan(null, null, (error, device) => {
+    // Scan only for common fitness BLE services (running/cycling/heart rate/power)
+    const serviceUUIDs = [
+      "00001814-0000-1000-8000-00805f9b34fb", // Running Speed and Cadence
+      "00001816-0000-1000-8000-00805f9b34fb", // Cycling Speed and Cadence
+      "00001818-0000-1000-8000-00805f9b34fb", // Cycling Power
+      "0000180d-0000-1000-8000-00805f9b34fb", // Heart Rate
+    ];
+
+    manager.current?.startDeviceScan(serviceUUIDs, null, (error, device) => {
       if (error) {
         setScanning(false);
         Alert.alert("Scan error", error.message);
@@ -98,8 +236,127 @@ export default function Index() {
     }, 10000);
   };
 
+  const subscribeToTelemetry = (deviceId: string) => {
+    cleanupSubscriptions();
+
+    const subscribe = (
+      service: string,
+      characteristic: string,
+      handler: (base64: string) => void,
+      serviceLabel: string,
+    ) => {
+      const key = `${service}:${characteristic}`;
+      subscriptions.current[key] = manager.current?.monitorCharacteristicForDevice(
+        deviceId,
+        service,
+        characteristic,
+        (error, characteristic) => {
+          if (error || !characteristic?.value) return;
+          setActiveServices((prev) =>
+            prev.includes(serviceLabel) ? prev : [...prev, serviceLabel],
+          );
+          handler(characteristic.value);
+        },
+      );
+    };
+
+    // Running Speed and Cadence
+    subscribe(
+      "00001814-0000-1000-8000-00805f9b34fb",
+      "00002a53-0000-1000-8000-00805f9b34fb",
+      (value) => {
+        const { speed, cadence } = parseRSCMeasurement(value);
+        setTelemetry((prev) => ({ ...prev, speed, cadence }));
+        appendLog(`RSC ⇒ speed=${speed.toFixed(2)} m/s, cadence=${cadence} rpm`);
+      },
+      "Running Speed/Cadence",
+    );
+
+    // Cycling Speed and Cadence
+    subscribe(
+      "00001816-0000-1000-8000-00805f9b34fb",
+      "00002a5b-0000-1000-8000-00805f9b34fb",
+      (value) => {
+        const { cadence } = parseCSCMeasurement(value);
+        setTelemetry((prev) => ({ ...prev, cadence: cadence ?? prev.cadence }));
+        if (cadence != null) appendLog(`CSC ⇒ cadence=${cadence} rpm`);
+      },
+      "Cycling Speed/Cadence",
+    );
+
+    // Heart Rate
+    subscribe(
+      "0000180d-0000-1000-8000-00805f9b34fb",
+      "00002a37-0000-1000-8000-00805f9b34fb",
+      (value) => {
+        const { heartRate } = parseHeartRateMeasurement(value);
+        setTelemetry((prev) => ({ ...prev, heartRate }));
+        appendLog(`HR ⇒ ${heartRate} bpm`);
+      },
+      "Heart Rate",
+    );
+
+    // Cycling Power
+    subscribe(
+      "00001818-0000-1000-8000-00805f9b34fb",
+      "00002a63-0000-1000-8000-00805f9b34fb",
+      (value) => {
+        const { power } = parseCyclingPowerMeasurement(value);
+        setTelemetry((prev) => ({ ...prev, power }));
+        appendLog(`Power ⇒ ${power} W`);
+      },
+      "Cycling Power",
+    );
+  };
+
+  const disconnect = async (manual = true) => {
+    if (!connectedId) return;
+
+    if (manual) {
+      manualDisconnectRef.current = true;
+      reconnectAttempts.current = 0;
+      reconnectTimeoutRef.current && clearTimeout(reconnectTimeoutRef.current);
+    }
+
+    cleanupSubscriptions();
+
+    try {
+      await manager.current?.cancelDeviceConnection(connectedId);
+      appendLog(`Disconnected from ${connectedName ?? connectedId}`);
+    } catch {
+      // ignore
+    }
+
+    setConnectedId(null);
+    setConnectedName(null);
+    resetTelemetry();
+    setActiveServices([]);
+  };
+
+  const scheduleReconnect = () => {
+    if (!autoReconnect || manualDisconnectRef.current) return;
+    if (!lastDeviceRef.current) return;
+
+    if (reconnectAttempts.current >= 3) {
+      appendLog("Auto-reconnect aborted after 3 attempts.");
+      return;
+    }
+
+    reconnectAttempts.current += 1;
+    const attempt = reconnectAttempts.current;
+
+    appendLog(`Auto-reconnect attempt ${attempt}...`);
+    reconnectTimeoutRef.current = setTimeout(() => {
+      if (lastDeviceRef.current) connect(lastDeviceRef.current);
+    }, 3000);
+  };
+
   const connect = async (device: Device) => {
     if (connectingId) return;
+
+    manualDisconnectRef.current = false;
+    reconnectAttempts.current = 0;
+    lastDeviceRef.current = device;
 
     setConnectingId(device.id);
 
@@ -109,9 +366,26 @@ export default function Index() {
         .then((d) => d.discoverAllServicesAndCharacteristics());
 
       setConnectedId(connected?.id ?? null);
-      Alert.alert("Connected", `Connected to ${device.name ?? device.id}`);
+      setConnectedName(device.name ?? device.id);
+      resetTelemetry();
+      setActiveServices([]);
+      appendLog(`Connected to ${device.name ?? device.id}`);
+
+      if (connected?.id) {
+        subscribeToTelemetry(connected.id);
+
+        // Listen for unexpected disconnects so we can auto reconnect.
+        subscriptions.current[`disconnect:${connected.id}`] =
+          manager.current?.onDeviceDisconnected(connected.id, () => {
+            appendLog(`Unexpected disconnect from ${device.name ?? device.id}`);
+            setConnectedId(null);
+            scheduleReconnect();
+          });
+      }
     } catch (e: any) {
+      appendLog(`Connection failed: ${e?.message ?? "Unknown error"}`);
       Alert.alert("Connection failed", e?.message ?? "Unknown error");
+      scheduleReconnect();
     } finally {
       setConnectingId(null);
     }
@@ -151,12 +425,89 @@ export default function Index() {
     <View style={styles.container}>
       <Text style={styles.title}>🩺 BLE Scanner</Text>
       <Text style={styles.subtitle}>
-        Tap a device to connect. (Runs for 10 seconds per scan.)
+        Scanning for cycling/running speed & cadence sensors, power meters, and heart rate monitors (10s scan).
       </Text>
 
       <TouchableOpacity style={styles.scanButton} onPress={startScan}>
         <Text style={styles.scanButtonText}>{scanButtonLabel}</Text>
       </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[
+          styles.scanButton,
+          autoReconnect ? styles.toggleOn : styles.toggleOff,
+        ]}
+        onPress={() => setAutoReconnect((v) => !v)}
+      >
+        <Text style={styles.scanButtonText}>
+          Auto-reconnect: {autoReconnect ? "On" : "Off"}
+        </Text>
+      </TouchableOpacity>
+
+      {connectedId ? (
+        <TouchableOpacity style={styles.disconnectButton} onPress={() => disconnect(true)}>
+          <Text style={styles.disconnectButtonText}>Disconnect</Text>
+        </TouchableOpacity>
+      ) : null}
+
+      <View style={styles.telemetryContainer}>
+        <Text style={styles.telemetryTitle}>Live data</Text>
+
+        <View style={styles.telemetryRow}>
+          <Text style={styles.telemetryLabel}>Connected</Text>
+          <Text style={styles.telemetryValue}>
+            {connectedName ?? "—"}
+          </Text>
+        </View>
+
+        <View style={styles.telemetryRow}>
+          <Text style={styles.telemetryLabel}>Active services</Text>
+          <Text style={styles.telemetryValue}>
+            {activeServices.length > 0 ? activeServices.join(", ") : "—"}
+          </Text>
+        </View>
+
+        <View style={styles.telemetryRow}>
+          <Text style={styles.telemetryLabel}>Speed</Text>
+          <Text style={styles.telemetryValue}>
+            {telemetry.speed != null ? `${telemetry.speed.toFixed(2)} m/s` : "–"}
+          </Text>
+        </View>
+        <View style={styles.telemetryRow}>
+          <Text style={styles.telemetryLabel}>Pace</Text>
+          <Text style={styles.telemetryValue}>{formatPace(telemetry.speed)}</Text>
+        </View>
+        <View style={styles.telemetryRow}>
+          <Text style={styles.telemetryLabel}>Cadence</Text>
+          <Text style={styles.telemetryValue}>
+            {telemetry.cadence != null ? `${telemetry.cadence} rpm` : "–"}
+          </Text>
+        </View>
+        <View style={styles.telemetryRow}>
+          <Text style={styles.telemetryLabel}>Power</Text>
+          <Text style={styles.telemetryValue}>
+            {telemetry.power != null ? `${telemetry.power} W` : "–"}
+          </Text>
+        </View>
+        <View style={styles.telemetryRow}>
+          <Text style={styles.telemetryLabel}>Heart rate</Text>
+          <Text style={styles.telemetryValue}>
+            {telemetry.heartRate != null ? `${telemetry.heartRate} bpm` : "–"}
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.logContainer}>
+        <Text style={styles.logTitle}>Log</Text>
+        <FlatList
+          data={logs}
+          keyExtractor={(item, index) => `${item}-${index}`}
+          renderItem={({ item }) => <Text style={styles.logLine}>{item}</Text>}
+          style={styles.logList}
+          inverted
+          ListEmptyComponent={<Text style={styles.logEmpty}>No logs yet.</Text>}
+        />
+      </View>
 
       <FlatList
         style={styles.list}
@@ -203,6 +554,52 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     fontSize: 16,
   },
+  disconnectButton: {
+    backgroundColor: "#ff3b30",
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  disconnectButtonText: {
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 16,
+  },
+  toggleOn: {
+    borderColor: "#28a745",
+    borderWidth: 1,
+  },
+  toggleOff: {
+    borderColor: "#ccc",
+    borderWidth: 1,
+  },
+  logContainer: {
+    borderWidth: 1,
+    borderColor: "#e0e0e0",
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 16,
+    backgroundColor: "#fafafa",
+    maxHeight: 180,
+  },
+  logTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    marginBottom: 8,
+  },
+  logList: {
+    flex: 1,
+  },
+  logLine: {
+    fontSize: 12,
+    color: "#333",
+    marginBottom: 4,
+  },
+  logEmpty: {
+    color: "#666",
+    fontSize: 12,
+  },
   list: {
     flex: 1,
   },
@@ -236,5 +633,32 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700",
     color: "#007aff",
+  },
+  telemetryContainer: {
+    borderWidth: 1,
+    borderColor: "#e0e0e0",
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 16,
+    backgroundColor: "#fafafa",
+  },
+  telemetryTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    marginBottom: 8,
+  },
+  telemetryRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 4,
+  },
+  telemetryLabel: {
+    fontSize: 12,
+    color: "#444",
+  },
+  telemetryValue: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#111",
   },
 });
