@@ -6,6 +6,9 @@
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+    "packagerOpts": {
+      "sourceMap": false
+    },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#ffffff"
