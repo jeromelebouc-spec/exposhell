@@ -11,7 +11,7 @@ export default function Index() {
         alignItems: "center",
       }}
     >
-      <Text>Edit app/index.tsx to edit this screen g.</Text>
+      <Text>Edit app/index.tsx to edit this putrain</Text>
      
     </View>
   );
