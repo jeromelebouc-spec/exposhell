@@ -1,6 +1,8 @@
+import * as ScreenOrientation from "expo-screen-orientation";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
+  BackHandler,
   FlatList,
   PermissionsAndroid,
   Platform,
@@ -10,20 +12,7 @@ import {
   View,
 } from "react-native";
 import { BleManager, Device } from "react-native-ble-plx";
-
-async function hasAndroidBlePermissions() {
-  if (Platform.OS !== "android") return true;
-
-  // Android 12+ requires specific BLE permissions.
-  const scan = await PermissionsAndroid.check(
-    PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
-  );
-  const connect = await PermissionsAndroid.check(
-    PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
-  );
-
-  return scan && connect;
-}
+import { WebView } from "react-native-webview";
 
 function base64ToBytes(base64: string) {
   // Pure JS base64 decode (works in React Native without Buffer/atob).
@@ -169,12 +158,15 @@ async function requestBlePermissions() {
 
 export default function Index() {
   const manager = useRef<BleManager | null>(null);
+  const destroyedRef = useRef(false);
   const subscriptions = useRef<Record<string, any>>({});
   const lastDeviceRef = useRef<Device | null>(null);
   const manualDisconnectRef = useRef(false);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scanTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttempts = useRef(0);
 
+  const [view, setView] = useState<"list" | "video">("list");
   const [devices, setDevices] = useState<Device[]>([]);
   const [scanning, setScanning] = useState(false);
   const [connectingId, setConnectingId] = useState<string | null>(null);
@@ -188,7 +180,7 @@ export default function Index() {
     power: null as number | null,
     rmssd: null as number | null,
   });
-  const [rrHistory, setRrHistory] = useState<number[]>([]);
+  const rrHistoryRef = useRef<number[]>([]);
   const [activeServices, setActiveServices] = useState<string[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
 
@@ -207,20 +199,67 @@ export default function Index() {
     subscriptions.current = {};
   };
 
+  const safeBleCall = async <T,>(fn: () => Promise<T>): Promise<T | null> => {
+    if (destroyedRef.current) return null;
+    try {
+      return await fn();
+    } catch (e: any) {
+      if (e?.message?.includes("BleManager was destroyed")) return null;
+      throw e;
+    }
+  };
+
   useEffect(() => {
     manager.current = new BleManager();
 
     return () => {
+      destroyedRef.current = true;
       cleanupSubscriptions();
       reconnectTimeoutRef.current && clearTimeout(reconnectTimeoutRef.current);
-      manager.current?.destroy();
+      scanTimeoutRef.current && clearTimeout(scanTimeoutRef.current);
+      try {
+        manager.current?.destroy();
+      } catch {
+        // may already be destroyed
+      }
     };
   }, []);
+
+  useEffect(() => {
+    if (connectedId) {
+      setView("video");
+      return;
+    }
+
+    if (view === "video") {
+      setView("list");
+    }
+  }, [connectedId, view]);
+
+  useEffect(() => {
+    if (view !== "video") {
+      // Use portrait for the main BLE list view.
+      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT);
+      return;
+    }
+
+    const backHandler = BackHandler.addEventListener("hardwareBackPress", () => {
+      setView("list");
+      return true;
+    });
+
+    // allow orientation changes while in video view
+    ScreenOrientation.unlockAsync();
+
+    return () => {
+      backHandler.remove();
+    };
+  }, [view]);
 
   const resetDevices = () => setDevices([]);
 
   const startScan = async () => {
-    if (scanning) return;
+    if (scanning || destroyedRef.current) return;
 
     const ok = await requestBlePermissions();
     if (!ok) {
@@ -243,6 +282,8 @@ export default function Index() {
     ];
 
     manager.current?.startDeviceScan(serviceUUIDs, null, (error, device) => {
+      if (destroyedRef.current) return;
+
       if (error) {
         setScanning(false);
         Alert.alert("Scan error", error.message);
@@ -258,7 +299,8 @@ export default function Index() {
       });
     });
 
-    setTimeout(() => {
+    scanTimeoutRef.current = setTimeout(() => {
+      if (destroyedRef.current) return;
       manager.current?.stopDeviceScan();
       setScanning(false);
     }, 10000);
@@ -321,12 +363,10 @@ export default function Index() {
         setTelemetry((prev) => ({ ...prev, heartRate }));
 
         if (rrIntervals?.length) {
-          setRrHistory((prev) => {
-            const next = [...rrIntervals, ...prev].slice(0, 64);
-            const rmssd = computeRmssd(next);
-            setTelemetry((t) => ({ ...t, rmssd }));
-            return next;
-          });
+          const next = [...rrIntervals, ...rrHistoryRef.current].slice(0, 64);
+          rrHistoryRef.current = next;
+          const rmssd = computeRmssd(next);
+          setTelemetry((t) => ({ ...t, rmssd }));
           appendLog(
             `HRV ⇒ rr=${rrIntervals.map((r) => r.toFixed(0)).join(",")} ms`,
           );
@@ -362,7 +402,11 @@ export default function Index() {
     cleanupSubscriptions();
 
     try {
-      await manager.current?.cancelDeviceConnection(connectedId);
+      if (manager.current) {
+        await safeBleCall(() =>
+          manager.current!.cancelDeviceConnection(connectedId),
+        );
+      }
       appendLog(`Disconnected from ${connectedName ?? connectedId}`);
     } catch {
       // ignore
@@ -375,7 +419,7 @@ export default function Index() {
   };
 
   const scheduleReconnect = () => {
-    if (!autoReconnect || manualDisconnectRef.current) return;
+    if (destroyedRef.current || !autoReconnect || manualDisconnectRef.current) return;
     if (!lastDeviceRef.current) return;
 
     if (reconnectAttempts.current >= 3) {
@@ -402,9 +446,10 @@ export default function Index() {
     setConnectingId(device.id);
 
     try {
-      const connected = await manager.current
-        ?.connectToDevice(device.id)
-        .then((d) => d.discoverAllServicesAndCharacteristics());
+      const connected = await safeBleCall(async () =>
+        (await manager.current?.connectToDevice(device.id))
+          ?.discoverAllServicesAndCharacteristics(),
+      );
 
       setConnectedId(connected?.id ?? null);
       setConnectedName(device.name ?? device.id);
@@ -461,6 +506,39 @@ export default function Index() {
     if (connectedId) return "Scan again";
     return "Start scan";
   }, [scanning, connectedId]);
+
+  if (view === "video") {
+    return (
+      <View style={styles.videoContainer}>
+        <WebView
+          style={styles.webview}
+          source={{
+            uri: "https://www.youtube.com/embed/dQw4w9WgXcQ?autoplay=1&controls=1&modestbranding=1&rel=0",
+          }}
+          allowsInlineMediaPlayback
+          mediaPlaybackRequiresUserAction={false}
+        />
+
+        <View style={styles.overlay} pointerEvents="box-none">
+          <TouchableOpacity style={styles.backButton} onPress={() => setView("list")}> 
+            <Text style={styles.backButtonText}>← Back</Text>
+          </TouchableOpacity>
+
+          <View style={styles.liveOverlay}>
+            <Text style={styles.liveOverlayText}>
+              {connectedName ?? "Connected"} • {activeServices.join(", ") || "No services"}
+            </Text>
+            <Text style={styles.liveOverlayText}>
+              {telemetry.speed != null ? `${telemetry.speed.toFixed(2)} m/s` : "–"} • {formatPace(telemetry.speed)}
+            </Text>
+            <Text style={styles.liveOverlayText}>
+              HR {telemetry.heartRate != null ? `${telemetry.heartRate} bpm` : "–"} • HRV {telemetry.rmssd != null ? `${telemetry.rmssd.toFixed(0)} ms` : "–"}
+            </Text>
+          </View>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -707,5 +785,38 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
     color: "#111",
+  },
+  videoContainer: {
+    flex: 1,
+    backgroundColor: "#000",
+  },
+  webview: {
+    flex: 1,
+  },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "space-between",
+    padding: 16,
+  },
+  backButton: {
+    backgroundColor: "rgba(0,0,0,0.5)",
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    alignSelf: "flex-start",
+  },
+  backButtonText: {
+    color: "#fff",
+    fontWeight: "700",
+  },
+  liveOverlay: {
+    backgroundColor: "rgba(0,0,0,0.5)",
+    borderRadius: 12,
+    padding: 12,
+  },
+  liveOverlayText: {
+    color: "#fff",
+    fontSize: 12,
+    marginBottom: 4,
   },
 });
