@@ -4,7 +4,7 @@ import { BleProvider } from "./ble-context";
 export default function RootLayout() {
   return (
     <BleProvider>
-      <Stack />
+      <Stack screenOptions={{ headerShown: false }} />
     </BleProvider>
   );
 }

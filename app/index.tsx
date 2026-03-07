@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   BackHandler,
+  Dimensions,
   FlatList,
   PermissionsAndroid,
   Platform,
@@ -12,7 +13,7 @@ import {
   View,
 } from "react-native";
 import { BleManager, Device } from "react-native-ble-plx";
-import { WebView } from "react-native-webview";
+import YoutubePlayer from "react-native-youtube-iframe";
 
 function base64ToBytes(base64: string) {
   // Pure JS base64 decode (works in React Native without Buffer/atob).
@@ -508,21 +509,24 @@ export default function Index() {
   }, [scanning, connectedId]);
 
   if (view === "video") {
+    const windowHeight = Dimensions.get("window").height;
+
     return (
       <View style={styles.videoContainer}>
-        <WebView
-          style={styles.webview}
-          source={{
-            uri: "https://www.youtube.com/embed/dQw4w9WgXcQ?autoplay=1&controls=1&modestbranding=1&rel=0",
+        <YoutubePlayer
+          height={windowHeight}
+          play={true}
+          videoId="dQw4w9WgXcQ"
+          webViewStyle={styles.webview}
+          webViewProps={{
+            allowsInlineMediaPlayback: true,
+            mediaPlaybackRequiresUserAction: false,
           }}
-          allowsInlineMediaPlayback
-          mediaPlaybackRequiresUserAction={false}
         />
 
         <View style={styles.overlay} pointerEvents="box-none">
           <TouchableOpacity style={styles.backButton} onPress={() => setView("list")}> 
             <Text style={styles.backButtonText}>← Back</Text>
-          </TouchableOpacity>
 
           <View style={styles.liveOverlay}>
             <Text style={styles.liveOverlayText}>
