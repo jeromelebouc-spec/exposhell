@@ -527,6 +527,7 @@ export default function Index() {
         <View style={styles.overlay} pointerEvents="box-none">
           <TouchableOpacity style={styles.backButton} onPress={() => setView("list")}> 
             <Text style={styles.backButtonText}>← Back</Text>
+          </TouchableOpacity>
 
           <View style={styles.liveOverlay}>
             <Text style={styles.liveOverlayText}>
