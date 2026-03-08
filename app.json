@@ -2,6 +2,7 @@
   "expo": {
     "name": "exposhell",
     "slug": "exposhell",
+    "scheme":"exposhell",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
@@ -33,10 +34,13 @@
         "android.permission.INTERNET",
         "android.permission.BLUETOOTH",
         "android.permission.BLUETOOTH_ADMIN",
-        "android.permission.BLUETOOTH_CONNECT"
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.BLUETOOTH_ADVERTISE",
+        "android.permission.BLUETOOTH_SCAN"
       ]
     },
     "plugins": [
+      "expo-share-intent",
       "expo-dev-client",
       "expo-sensors",
       "expo-location",
@@ -50,8 +54,9 @@
         {
           "isBackgroundEnabled": true,
           "modes": [
-            "central"
-          ]
+            "central", "peripheral"
+          ],
+          "bluetoothAlwaysPermission": "Allow $(PRODUCT_NAME) to use Bluetooth even when you are not using the app."
         }
       ],
       "expo-asset"
@@ -60,6 +65,9 @@
       "eas": {
         "projectId": "d2fc2326-310b-4bbe-b02b-382d68b95e22"
       }
+    },
+    "ios": {
+      "bundleIdentifier": "com.yourname.exposhell"
     }
   }
 }
