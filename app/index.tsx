@@ -547,7 +547,7 @@ export default function Index() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>🩺 BLE Scanner</Text>
+      <Text style={styles.title}>🩺 BLE Scanner yo</Text>
       <Text style={styles.subtitle}>
         Scanning for cycling/running speed & cadence sensors, power meters, and heart rate monitors (10s scan).
       </Text>
