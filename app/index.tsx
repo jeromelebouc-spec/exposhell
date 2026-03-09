@@ -119,6 +119,35 @@ function parseCyclingPowerMeasurement(base64: string) {
   return { power, flags: bytes[0] | (bytes[1] << 8) };
 }
 
+// FTMS treadmill data – see peripheral README for conversion details.
+function parseFTMSMeasurement(base64: string) {
+  const bytes = base64ToBytes(base64);
+  const flags = bytes[0];
+  let offset = 1;
+
+  const rawSpeed = bytes[offset] | (bytes[offset + 1] << 8);
+  const speed = (rawSpeed / 100) / 3.6; // km/h → m/s
+  offset += 2;
+
+  let incline: number | null = null;
+  if (flags & 0x02) {
+    const rawIncline = bytes[offset] | (bytes[offset + 1] << 8);
+    incline = rawIncline / 100;
+    offset += 2;
+  }
+
+  let distance: number | null = null;
+  if (flags & 0x04) {
+    distance =
+      (bytes[offset] |
+        (bytes[offset + 1] << 8) |
+        (bytes[offset + 2] << 16)) / 10;
+    offset += 3;
+  }
+
+  return { speed, incline, distance };
+}
+
 function formatPace(speedMps: number | null) {
   if (!speedMps || speedMps <= 0) return "–";
   const kmh = speedMps * 3.6;
@@ -180,13 +209,23 @@ export default function Index() {
     heartRate: null as number | null,
     power: null as number | null,
     rmssd: null as number | null,
+    incline: null as number | null,
+    distance: null as number | null,
   });
   const rrHistoryRef = useRef<number[]>([]);
   const [activeServices, setActiveServices] = useState<string[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
 
   const resetTelemetry = () =>
-    setTelemetry({ speed: null, cadence: null, heartRate: null, power: null, rmssd: null });
+    setTelemetry({
+      speed: null,
+      cadence: null,
+      heartRate: null,
+      power: null,
+      rmssd: null,
+      incline: null,
+      distance: null,
+    });
 
   const appendLog = (message: string) => {
     setLogs((prev) => {
@@ -226,13 +265,10 @@ export default function Index() {
     };
   }, []);
 
+  // keep showing video only when user explicitly switches; always go back to
+  // list when disconnected
   useEffect(() => {
-    if (connectedId) {
-      setView("video");
-      return;
-    }
-
-    if (view === "video") {
+    if (!connectedId && view === "video") {
       setView("list");
     }
   }, [connectedId, view]);
@@ -537,6 +573,9 @@ export default function Index() {
               {telemetry.speed != null ? `${telemetry.speed.toFixed(2)} m/s` : "–"} • {formatPace(telemetry.speed)}
             </Text>
             <Text style={styles.liveOverlayText}>
+              Incline {telemetry.incline != null ? `${telemetry.incline.toFixed(2)}%` : "–"} • Dist {telemetry.distance != null ? `${telemetry.distance.toFixed(1)}m` : "–"}
+            </Text>
+            <Text style={styles.liveOverlayText}>
               HR {telemetry.heartRate != null ? `${telemetry.heartRate} bpm` : "–"} • HRV {telemetry.rmssd != null ? `${telemetry.rmssd.toFixed(0)} ms` : "–"}
             </Text>
           </View>
@@ -549,7 +588,7 @@ export default function Index() {
     <View style={styles.container}>
       <Text style={styles.title}>🩺 BLE Scanner yo</Text>
       <Text style={styles.subtitle}>
-        Scanning for cycling/running speed & cadence sensors, power meters, and heart rate monitors (10s scan).
+        Scanning for cycling/running speed & cadence sensors, power meters, heart rate monitors, and FTMS treadmills (10s scan).
       </Text>
 
       <TouchableOpacity style={styles.scanButton} onPress={startScan}>
@@ -567,6 +606,17 @@ export default function Index() {
           Auto-reconnect: {autoReconnect ? "On" : "Off"}
         </Text>
       </TouchableOpacity>
+
+      {/* button to manually reveal the video player */}
+      {/** precompute because TS sometimes narrows view in JSX */}
+      {(() => {
+        const showVideoButton = connectedId != null && view === "list";
+        return showVideoButton ? (
+          <TouchableOpacity style={styles.scanButton} onPress={() => setView("video")}> 
+            <Text style={styles.scanButtonText}>Show video</Text>
+          </TouchableOpacity>
+        ) : null;
+      })()}
 
       {connectedId ? (
         <TouchableOpacity style={styles.disconnectButton} onPress={() => disconnect(true)}>
@@ -623,6 +673,18 @@ export default function Index() {
           <Text style={styles.telemetryLabel}>HRV (RMSSD)</Text>
           <Text style={styles.telemetryValue}>
             {telemetry.rmssd != null ? `${telemetry.rmssd.toFixed(0)} ms` : "–"}
+          </Text>
+        </View>
+        <View style={styles.telemetryRow}>
+          <Text style={styles.telemetryLabel}>Incline</Text>
+          <Text style={styles.telemetryValue}>
+            {telemetry.incline != null ? `${telemetry.incline.toFixed(2)} %` : "–"}
+          </Text>
+        </View>
+        <View style={styles.telemetryRow}>
+          <Text style={styles.telemetryLabel}>Distance</Text>
+          <Text style={styles.telemetryValue}>
+            {telemetry.distance != null ? `${telemetry.distance.toFixed(1)} m` : "–"}
           </Text>
         </View>
       </View>

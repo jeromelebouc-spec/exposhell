@@ -103,6 +103,37 @@ function parseCyclingPowerMeasurement(base64: string) {
   return { power };
 }
 
+// FTMS treadmill data (0x2ACD). Flags indicate which fields are present;
+// see Bluetooth spec. In practice most sensors send speed (uint16 km/h×100),
+// incline (int16 1/100%) and total distance (uint24 0.1m).
+function parseFTMSMeasurement(base64: string) {
+  const bytes = base64ToBytes(base64);
+  const flags = bytes[0];
+  let offset = 1;
+
+  const rawSpeed = bytes[offset] | (bytes[offset + 1] << 8);
+  const speed = (rawSpeed / 100) / 3.6; // km/h → m/s
+  offset += 2;
+
+  let incline: number | null = null;
+  if (flags & 0x02) {
+    const rawIncline = bytes[offset] | (bytes[offset + 1] << 8);
+    incline = rawIncline / 100;
+    offset += 2;
+  }
+
+  let distance: number | null = null;
+  if (flags & 0x04) {
+    distance =
+      (bytes[offset] |
+        (bytes[offset + 1] << 8) |
+        (bytes[offset + 2] << 16)) / 10; // 0.1m units
+    offset += 3;
+  }
+
+  return { speed, incline, distance };
+}
+
 function formatPace(speedMps: number | null) {
   if (!speedMps || speedMps <= 0) return "–";
   const kmh = speedMps * 3.6;
@@ -164,12 +195,22 @@ function useBleInternal() {
     heartRate: null as number | null,
     power: null as number | null,
     rmssd: null as number | null,
+    incline: null as number | null,
+    distance: null as number | null,
   });
   const [activeServices, setActiveServices] = useState<string[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
 
   const resetTelemetry = useCallback(() => {
-    setTelemetry({ speed: null, cadence: null, heartRate: null, power: null, rmssd: null });
+    setTelemetry({
+      speed: null,
+      cadence: null,
+      heartRate: null,
+      power: null,
+      rmssd: null,
+      incline: null,
+      distance: null,
+    });
   }, []);
 
   const appendLog = useCallback((message: string) => {
@@ -233,6 +274,8 @@ function useBleInternal() {
       "00001816-0000-1000-8000-00805f9b34fb",
       "00001818-0000-1000-8000-00805f9b34fb",
       "0000180d-0000-1000-8000-00805f9b34fb",
+      // FTMS treadmill service
+      "00001826-0000-1000-8000-00805f9b34fb",
     ];
 
     manager.current?.startDeviceScan(serviceUUIDs, null, (error, device) => {
@@ -389,6 +432,27 @@ function useBleInternal() {
           appendLog(`Power ⇒ ${power} W`);
         },
         "Cycling Power",
+      );
+
+      // FTMS treadmill data
+      subscribe(
+        "00001826-0000-1000-8000-00805f9b34fb",
+        "00002acd-0000-1000-8000-00805f9b34fb",
+        (value) => {
+          const { speed, incline, distance } = parseFTMSMeasurement(value);
+          setTelemetry((prev) => ({
+            ...prev,
+            speed,
+            incline: incline ?? prev.incline,
+            distance: distance ?? prev.distance,
+          }));
+          appendLog(
+            `FTMS ⇒ speed=${speed.toFixed(2)} m/s` +
+              (incline != null ? `, incline=${incline.toFixed(2)}%` : "") +
+              (distance != null ? `, distance=${distance.toFixed(1)}m` : ""),
+          );
+        },
+        "Treadmill",
       );
     },
     [appendLog, cleanupSubscriptions],
