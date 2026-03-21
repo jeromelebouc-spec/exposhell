@@ -166,9 +166,9 @@ async function requestBlePermissions() {
 
   return (
     granted[PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN] ===
-      PermissionsAndroid.RESULTS.GRANTED &&
+    PermissionsAndroid.RESULTS.GRANTED &&
     granted[PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT] ===
-      PermissionsAndroid.RESULTS.GRANTED
+    PermissionsAndroid.RESULTS.GRANTED
   );
 }
 
@@ -448,8 +448,8 @@ function useBleInternal() {
           }));
           appendLog(
             `FTMS ⇒ speed=${speed.toFixed(2)} m/s` +
-              (incline != null ? `, incline=${incline.toFixed(2)}%` : "") +
-              (distance != null ? `, distance=${distance.toFixed(1)}m` : ""),
+            (incline != null ? `, incline=${incline.toFixed(2)}%` : "") +
+            (distance != null ? `, distance=${distance.toFixed(1)}m` : ""),
           );
         },
         "Treadmill",
