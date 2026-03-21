@@ -1,3 +1,4 @@
+import { useBle } from "@/context/ble-context";
 import * as ScreenOrientation from "expo-screen-orientation";
 import React, { useEffect, useMemo, useState } from "react";
 import {
@@ -11,7 +12,6 @@ import {
 } from "react-native";
 import { Device } from "react-native-ble-plx";
 import YoutubePlayer from "react-native-youtube-iframe";
-import { useBle } from "./ble-context";
 
 
 
@@ -137,7 +137,7 @@ export default function Index() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>🩺 BLE Scanner yop</Text>
+      <Text style={styles.title}>🩺 BLE Scanner youpi</Text>
       <Text style={styles.subtitle}>
         Scanning for cycling/running speed & cadence sensors, power meters, heart rate monitors, and FTMS treadmills (10s scan).
       </Text>

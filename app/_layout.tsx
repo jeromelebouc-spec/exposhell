@@ -1,5 +1,5 @@
 import { Stack } from "expo-router";
-import { BleProvider } from "./ble-context";
+import { BleProvider } from "@/context/ble-context";
 
 export default function RootLayout() {
   return (
