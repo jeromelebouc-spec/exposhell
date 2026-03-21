@@ -189,7 +189,15 @@ export default function Index() {
         </View>
 
         {(
-          Object.keys(preferredSource) as (keyof typeof telemetry)[]
+          [
+            "speed",
+            "cadence",
+            "heartRate",
+            "power",
+            "rmssd",
+            "incline",
+            "distance",
+          ] as const
         ).map((metric) => {
           const value = telemetry[metric];
           const sourceId = preferredSource[metric];
@@ -198,14 +206,20 @@ export default function Index() {
           );
           const sourceDevice = connectedDevices.find((d) => d.id === sourceId);
 
-          if (sources.length === 0 && value === null) return null;
+          const label = {
+            speed: "Speed",
+            cadence: "Cadence",
+            heartRate: "Heart Rate",
+            power: "Power",
+            rmssd: "HRV (RMSSD)",
+            incline: "Incline",
+            distance: "Distance",
+          }[metric];
 
           return (
             <View key={metric} style={styles.metricRow}>
               <View style={styles.metricInfo}>
-                <Text style={styles.telemetryLabel}>
-                  {metric.charAt(0).toUpperCase() + metric.slice(1)}
-                </Text>
+                <Text style={styles.telemetryLabel}>{label}</Text>
                 {sources.length > 1 && (
                   <TouchableOpacity
                     onPress={() => {
@@ -221,9 +235,7 @@ export default function Index() {
                   </TouchableOpacity>
                 )}
                 {sources.length === 1 && (
-                   <Text style={styles.sourceInfo}>
-                   {sourceDevice?.name}
-                 </Text>
+                  <Text style={styles.sourceInfo}>{sourceDevice?.name}</Text>
                 )}
               </View>
               <Text style={styles.telemetryValue}>

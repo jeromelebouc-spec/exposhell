@@ -240,12 +240,12 @@ function useBleInternal() {
   const manager = useRef<BleManager | null>(null);
   const destroyedRef = useRef(false);
   const subscriptions = useRef<Record<string, any>>({});
-  const lastDeviceRef = useRef<Device | null>(null);
   const manualDisconnectRef = useRef(false);
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectTimeoutRefs = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const scanTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const reconnectAttempts = useRef(0);
-  const rrHistoryRef = useRef<number[]>([]);
+  const reconnectAttempts = useRef<Record<string, number>>({});
+  const rrHistoryRefs = useRef<Record<string, number[]>>({});
+  const lastDevicesRef = useRef<Record<string, Device>>({});
   const cscDataRef = useRef<Record<string, any>>({});
 
   const [devices, setDevices] = useState<Device[]>([]);
@@ -255,21 +255,13 @@ function useBleInternal() {
   const [autoReconnect, setAutoReconnect] = useState(true);
 
   const [telemetryMap, setTelemetryMap] = useState<Record<string, TelemetryData>>({});
-  const [preferredSource, setPreferredSource] = useState<Record<MetricKey, string | null>>({
-    speed: null,
-    cadence: null,
-    heartRate: null,
-    power: null,
-    rmssd: null,
-    incline: null,
-    distance: null,
-  });
+  const [preferredSource, setPreferredSource] = useState<Partial<Record<MetricKey, string>>>({});
 
   const [activeServicesMap, setActiveServicesMap] = useState<Record<string, string[]>>({});
   const [logs, setLogs] = useState<string[]>([]);
 
   const telemetry = useMemo(() => {
-    const result: TelemetryData = {
+    const empty: TelemetryData = {
       speed: null,
       cadence: null,
       heartRate: null,
@@ -278,14 +270,27 @@ function useBleInternal() {
       incline: null,
       distance: null,
     };
-    (Object.keys(preferredSource) as MetricKey[]).forEach((key) => {
+    
+    const result = { ...empty };
+    const metrics = Object.keys(empty) as MetricKey[];
+
+    metrics.forEach((key) => {
       const sourceId = preferredSource[key];
-      if (sourceId && telemetryMap[sourceId]) {
+      if (sourceId && telemetryMap[sourceId] && telemetryMap[sourceId][key] !== null) {
         result[key] = telemetryMap[sourceId][key];
+      } else {
+        // fallback: first device that has a non-null value
+        for (const dev of connectedDevices) {
+          const val = telemetryMap[dev.id]?.[key];
+          if (val !== null && val !== undefined) {
+            result[key] = val;
+            break;
+          }
+        }
       }
     });
     return result;
-  }, [telemetryMap, preferredSource]);
+  }, [telemetryMap, preferredSource, connectedDevices]);
 
   const updateDeviceTelemetry = useCallback((deviceId: string, delta: Partial<TelemetryData>) => {
     setTelemetryMap((prev) => {
@@ -344,9 +349,21 @@ function useBleInternal() {
     });
   }, []);
 
+  const cleanupDeviceSubscriptions = useCallback((deviceId: string) => {
+    Object.keys(subscriptions.current)
+      .filter((key) => key.startsWith(`${deviceId}:`))
+      .forEach((key) => {
+        subscriptions.current[key]?.remove();
+        delete subscriptions.current[key];
+      });
+  }, []);
+
   const cleanupSubscriptions = useCallback(() => {
     Object.values(subscriptions.current).forEach((sub) => sub?.remove());
     subscriptions.current = {};
+    // Also clear all reconnect timeouts
+    Object.values(reconnectTimeoutRefs.current).forEach(clearTimeout);
+    reconnectTimeoutRefs.current = {};
   }, []);
 
   const safeBleCall = useCallback(
@@ -371,7 +388,6 @@ function useBleInternal() {
     return () => {
       destroyedRef.current = true;
       cleanupSubscriptions();
-      reconnectTimeoutRef.current && clearTimeout(reconnectTimeoutRef.current);
       scanTimeoutRef.current && clearTimeout(scanTimeoutRef.current);
       try {
         manager.current?.stopDeviceScan();
@@ -445,27 +461,26 @@ function useBleInternal() {
 
   const connectRef = useRef<((device: Device) => Promise<void>) | null>(null);
 
-  const scheduleReconnect = useCallback(() => {
+  const scheduleReconnect = useCallback((device: Device) => {
     if (destroyedRef.current || !autoReconnect || manualDisconnectRef.current) return;
-    if (!lastDeviceRef.current) return;
 
-    if (reconnectAttempts.current >= 3) {
-      appendLog("Auto-reconnect aborted after 3 attempts.");
+    const attempts = reconnectAttempts.current[device.id] || 0;
+    if (attempts >= 3) {
+      appendLog(`[${device.name || device.id}] Auto-reconnect aborted after 3 attempts.`);
       return;
     }
 
-    reconnectAttempts.current += 1;
-    const attempt = reconnectAttempts.current;
-
-    appendLog(`Auto-reconnect attempt ${attempt}...`);
-    reconnectTimeoutRef.current = setTimeout(() => {
-      if (lastDeviceRef.current) connectRef.current?.(lastDeviceRef.current);
+    reconnectAttempts.current[device.id] = attempts + 1;
+    
+    appendLog(`[${device.name || device.id}] Auto-reconnect attempt ${attempts + 1}...`);
+    reconnectTimeoutRefs.current[device.id] = setTimeout(() => {
+      if (lastDevicesRef.current[device.id]) connectRef.current?.(lastDevicesRef.current[device.id]);
     }, 3000);
   }, [autoReconnect, appendLog]);
 
   const disconnect = useCallback(
     async (deviceId: string) => {
-      cleanupSubscriptions(); // Note: in multi-device this might need more refinement, but for now we follow old logic
+      cleanupDeviceSubscriptions(deviceId);
 
       try {
         if (manager.current) {
@@ -487,25 +502,29 @@ function useBleInternal() {
         return next;
       });
       
-      // Cleanup sources if they pointed to this device
+      // Smart failover for sources
       setPreferredSource(prev => {
         const next = {...prev};
         let changed = false;
         (Object.keys(next) as MetricKey[]).forEach(k => {
           if (next[k] === deviceId) {
-            next[k] = null;
+            // Find another connected device that has this metric
+            const fallback = connectedDevices
+              .filter(d => d.id !== deviceId)
+              .find(d => telemetryMap[d.id]?.[k] !== null);
+            next[k] = fallback?.id;
             changed = true;
           }
         });
         return changed ? next : prev;
       });
     },
-    [connectedDevices, cleanupSubscriptions, resetTelemetry, safeBleCall, appendLog],
+    [connectedDevices, telemetryMap, cleanupDeviceSubscriptions, resetTelemetry, safeBleCall, appendLog],
   );
 
   const subscribeToTelemetry = useCallback(
     (deviceId: string) => {
-      cleanupSubscriptions();
+      cleanupDeviceSubscriptions(deviceId);
 
       const subscribe = (
         service: string,
@@ -573,8 +592,9 @@ function useBleInternal() {
           
           let rmssd: number | null = null;
           if (rrIntervals?.length) {
-            const next = [...rrIntervals, ...rrHistoryRef.current].slice(0, 64);
-            rrHistoryRef.current = next;
+            const hist = rrHistoryRefs.current[deviceId] || [];
+            const next = [...rrIntervals, ...hist].slice(0, 64);
+            rrHistoryRefs.current[deviceId] = next;
             rmssd = computeRmssd(next);
             appendLog(`[${deviceId}] HRV ⇒ rr=${rrIntervals.map((r) => r.toFixed(0)).join(",")} ms`);
           } else {
@@ -620,8 +640,8 @@ function useBleInternal() {
       if (connectingId) return;
 
       manualDisconnectRef.current = false;
-      reconnectAttempts.current = 0;
-      lastDeviceRef.current = device;
+      reconnectAttempts.current[device.id] = 0;
+      lastDevicesRef.current[device.id] = device;
 
       setConnectingId(device.id);
 
@@ -645,13 +665,13 @@ function useBleInternal() {
             manager.current?.onDeviceDisconnected(connected.id, () => {
               appendLog(`Unexpected disconnect from ${device.name ?? device.id}`);
               setConnectedDevices((prev) => prev.filter(d => d.id !== device.id));
-              scheduleReconnect();
+              scheduleReconnect(device);
             });
         }
       } catch (e: any) {
         appendLog(`Connection failed: ${e?.message ?? "Unknown error"}`);
         Alert.alert("Connection failed", e?.message ?? "Unknown error");
-        scheduleReconnect();
+        scheduleReconnect(device);
       } finally {
         setConnectingId(null);
       }
