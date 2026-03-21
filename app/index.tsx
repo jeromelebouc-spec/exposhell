@@ -1,4 +1,5 @@
 import { useBle } from "@/context/ble-context";
+import { formatPace } from "@/utils/formatters";
 import * as ScreenOrientation from "expo-screen-orientation";
 import React, { useEffect, useMemo, useState } from "react";
 import {
@@ -20,28 +21,31 @@ export default function Index() {
     devices,
     scanning,
     connectingId,
-    connectedId,
-    connectedName,
+    connectedDevices,
     autoReconnect,
     telemetry,
-    activeServices,
+    telemetryMap,
+    preferredSource,
+    activeServicesMap,
     logs,
     startScan,
     connect,
     disconnect,
     setAutoReconnect,
-    formatPace,
+    setPreferredSource,
   } = useBle();
+
+  const isConnected = connectedDevices.length > 0;
 
   const [view, setView] = useState<"list" | "video">("list");
 
   // keep showing video only when user explicitly switches; always go back to
   // list when disconnected
   useEffect(() => {
-    if (!connectedId && view === "video") {
+    if (!isConnected && view === "video") {
       setView("list");
     }
-  }, [connectedId, view]);
+  }, [isConnected, view]);
 
   useEffect(() => {
     if (view !== "video") {
@@ -66,24 +70,21 @@ export default function Index() {
 
 
   const renderItem = ({ item }: { item: Device }) => {
-    const isConnected = item.id === connectedId;
+    const isConn = connectedDevices.some((d) => d.id === item.id);
     const isConnecting = item.id === connectingId;
 
     return (
       <TouchableOpacity
-        style={[
-          styles.deviceRow,
-          isConnected && styles.deviceRowConnected,
-        ]}
-        onPress={() => connect(item)}
-        disabled={isConnecting || !scanning && !!connectedId}
+        style={[styles.deviceRow, isConn && styles.deviceRowConnected]}
+        onPress={() => (isConn ? disconnect(item.id) : connect(item))}
+        disabled={isConnecting}
       >
         <View>
           <Text style={styles.deviceName}>{item.name ?? "Unknown"}</Text>
           <Text style={styles.deviceId}>{item.id}</Text>
         </View>
-        <Text style={styles.deviceStatus}>
-          {isConnected ? "✅ Connected" : isConnecting ? "…" : "Connect"}
+        <Text style={[styles.deviceStatus, isConn && { color: "#ff3b30" }]}>
+          {isConn ? "Disconnect" : isConnecting ? "…" : "Connect"}
         </Text>
       </TouchableOpacity>
     );
@@ -91,9 +92,9 @@ export default function Index() {
 
   const scanButtonLabel = useMemo(() => {
     if (scanning) return "Scanning…";
-    if (connectedId) return "Scan again";
+    if (isConnected) return "Scan again";
     return "Start scan";
-  }, [scanning, connectedId]);
+  }, [scanning, isConnected]);
 
   if (view === "video") {
     const windowHeight = Dimensions.get("window").height;
@@ -118,7 +119,7 @@ export default function Index() {
 
           <View style={styles.liveOverlay}>
             <Text style={styles.liveOverlayText}>
-              {connectedName ?? "Connected"} • {activeServices.join(", ") || "No services"}
+              {connectedDevices.length} sensors connected • {Array.from(new Set(Object.values(activeServicesMap).flat())).join(", ")}
             </Text>
             <Text style={styles.liveOverlayText}>
               {telemetry.speed != null ? `${telemetry.speed.toFixed(2)} m/s` : "–"} • {formatPace(telemetry.speed)}
@@ -127,7 +128,7 @@ export default function Index() {
               Incline {telemetry.incline != null ? `${telemetry.incline.toFixed(2)}%` : "–"} • Dist {telemetry.distance != null ? `${telemetry.distance.toFixed(1)}m` : "–"}
             </Text>
             <Text style={styles.liveOverlayText}>
-              HR {telemetry.heartRate != null ? `${telemetry.heartRate} bpm` : "–"} • HRV {telemetry.rmssd != null ? `${telemetry.rmssd.toFixed(0)} ms` : "–"}
+              HR {telemetry.heartRate != null ? `${telemetry.heartRate} bpm` : "–"} • {telemetry.cadence != null ? `${telemetry.cadence} rpm` : "–"}
             </Text>
           </View>
         </View>
@@ -161,7 +162,7 @@ export default function Index() {
       {/* button to manually reveal the video player */}
       {/** precompute because TS sometimes narrows view in JSX */}
       {(() => {
-        const showVideoButton = connectedId != null && view === "list";
+        const showVideoButton = isConnected && view === "list";
         return showVideoButton ? (
           <TouchableOpacity style={styles.scanButton} onPress={() => setView("video")}>
             <Text style={styles.scanButtonText}>Show video</Text>
@@ -169,9 +170,9 @@ export default function Index() {
         ) : null;
       })()}
 
-      {connectedId ? (
-        <TouchableOpacity style={styles.disconnectButton} onPress={() => disconnect(true)}>
-          <Text style={styles.disconnectButtonText}>Disconnect</Text>
+      {isConnected ? (
+        <TouchableOpacity style={styles.disconnectButton} onPress={() => connectedDevices.forEach(d => disconnect(d.id))}>
+          <Text style={styles.disconnectButtonText}>Disconnect all</Text>
         </TouchableOpacity>
       ) : null}
 
@@ -179,65 +180,68 @@ export default function Index() {
         <Text style={styles.telemetryTitle}>Live data</Text>
 
         <View style={styles.telemetryRow}>
-          <Text style={styles.telemetryLabel}>Connected</Text>
+          <Text style={styles.telemetryLabel}>Sensors</Text>
           <Text style={styles.telemetryValue}>
-            {connectedName ?? "—"}
+            {connectedDevices.length > 0
+              ? `${connectedDevices.length} connected`
+              : "—"}
           </Text>
         </View>
 
-        <View style={styles.telemetryRow}>
-          <Text style={styles.telemetryLabel}>Active services</Text>
-          <Text style={styles.telemetryValue}>
-            {activeServices.length > 0 ? activeServices.join(", ") : "—"}
-          </Text>
-        </View>
+        {(
+          Object.keys(preferredSource) as (keyof typeof telemetry)[]
+        ).map((metric) => {
+          const value = telemetry[metric];
+          const sourceId = preferredSource[metric];
+          const sources = connectedDevices.filter(
+            (d) => telemetryMap[d.id]?.[metric] !== null
+          );
+          const sourceDevice = connectedDevices.find((d) => d.id === sourceId);
 
-        <View style={styles.telemetryRow}>
-          <Text style={styles.telemetryLabel}>Speed</Text>
-          <Text style={styles.telemetryValue}>
-            {telemetry.speed != null ? `${telemetry.speed.toFixed(2)} m/s` : "–"}
-          </Text>
-        </View>
-        <View style={styles.telemetryRow}>
-          <Text style={styles.telemetryLabel}>Pace</Text>
-          <Text style={styles.telemetryValue}>{formatPace(telemetry.speed)}</Text>
-        </View>
-        <View style={styles.telemetryRow}>
-          <Text style={styles.telemetryLabel}>Cadence</Text>
-          <Text style={styles.telemetryValue}>
-            {telemetry.cadence != null ? `${telemetry.cadence} rpm` : "–"}
-          </Text>
-        </View>
-        <View style={styles.telemetryRow}>
-          <Text style={styles.telemetryLabel}>Power</Text>
-          <Text style={styles.telemetryValue}>
-            {telemetry.power != null ? `${telemetry.power} W` : "–"}
-          </Text>
-        </View>
-        <View style={styles.telemetryRow}>
-          <Text style={styles.telemetryLabel}>Heart rate</Text>
-          <Text style={styles.telemetryValue}>
-            {telemetry.heartRate != null ? `${telemetry.heartRate} bpm` : "–"}
-          </Text>
-        </View>
-        <View style={styles.telemetryRow}>
-          <Text style={styles.telemetryLabel}>HRV (RMSSD)</Text>
-          <Text style={styles.telemetryValue}>
-            {telemetry.rmssd != null ? `${telemetry.rmssd.toFixed(0)} ms` : "–"}
-          </Text>
-        </View>
-        <View style={styles.telemetryRow}>
-          <Text style={styles.telemetryLabel}>Incline</Text>
-          <Text style={styles.telemetryValue}>
-            {telemetry.incline != null ? `${telemetry.incline.toFixed(2)} %` : "–"}
-          </Text>
-        </View>
-        <View style={styles.telemetryRow}>
-          <Text style={styles.telemetryLabel}>Distance</Text>
-          <Text style={styles.telemetryValue}>
-            {telemetry.distance != null ? `${telemetry.distance.toFixed(1)} m` : "–"}
-          </Text>
-        </View>
+          if (sources.length === 0 && value === null) return null;
+
+          return (
+            <View key={metric} style={styles.metricRow}>
+              <View style={styles.metricInfo}>
+                <Text style={styles.telemetryLabel}>
+                  {metric.charAt(0).toUpperCase() + metric.slice(1)}
+                </Text>
+                {sources.length > 1 && (
+                  <TouchableOpacity
+                    onPress={() => {
+                      const idx = sources.findIndex((s) => s.id === sourceId);
+                      const next = sources[(idx + 1) % sources.length];
+                      setPreferredSource(metric, next.id);
+                    }}
+                    style={styles.sourceToggle}
+                  >
+                    <Text style={styles.sourceToggleText}>
+                      Source: {sourceDevice?.name ?? "Auto"} 🔄
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                {sources.length === 1 && (
+                   <Text style={styles.sourceInfo}>
+                   {sourceDevice?.name}
+                 </Text>
+                )}
+              </View>
+              <Text style={styles.telemetryValue}>
+                {value !== null
+                  ? typeof value === "number"
+                    ? metric === "speed"
+                      ? `${value.toFixed(2)} m/s`
+                      : metric === "distance"
+                      ? `${value.toFixed(1)} m`
+                      : metric === "incline"
+                      ? `${value.toFixed(2)} %`
+                      : Math.round(value)
+                    : value
+                  : "–"}
+              </Text>
+            </View>
+          );
+        })}
       </View>
 
       <View style={styles.logContainer}>
@@ -403,6 +407,30 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
     color: "#111",
+  },
+  metricRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#eee",
+    paddingBottom: 4,
+  },
+  metricInfo: {
+    flex: 1,
+  },
+  sourceToggle: {
+    marginTop: 2,
+  },
+  sourceToggleText: {
+    fontSize: 10,
+    color: "#007aff",
+    fontWeight: "600",
+  },
+  sourceInfo: {
+    fontSize: 10,
+    color: "#666",
   },
   videoContainer: {
     flex: 1,

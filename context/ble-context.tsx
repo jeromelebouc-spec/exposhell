@@ -2,6 +2,18 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { Alert, PermissionsAndroid, Platform } from "react-native";
 import { BleManager, Device } from "react-native-ble-plx";
 
+export type TelemetryData = {
+  speed: number | null;
+  cadence: number | null;
+  heartRate: number | null;
+  power: number | null;
+  rmssd: number | null;
+  incline: number | null;
+  distance: number | null;
+};
+
+export type MetricKey = keyof TelemetryData;
+
 const BleContext = createContext<ReturnType<typeof useBleInternal> | null>(null);
 
 export function BleProvider({ children }: { children: React.ReactNode }) {
@@ -57,20 +69,79 @@ function parseRSCMeasurement(base64: string) {
   return { speed, cadence };
 }
 
-function parseCSCMeasurement(base64: string) {
+function parseCSCMeasurement(
+  base64: string,
+  prev?: {
+    wheelRev: number;
+    wheelTime: number;
+    crankRev: number;
+    crankTime: number;
+  }
+) {
   const bytes = base64ToBytes(base64);
   const flags = bytes[0];
-  let cadence: number | null = null;
   let offset = 1;
+
+  let speed: number | null = null;
+  let cadence: number | null = null;
+
+  let currentWheelRev = 0;
+  let currentWheelTime = 0;
+  let currentCrankRev = 0;
+  let currentCrankTime = 0;
+
   const hasWheel = (flags & 0x01) !== 0;
   const hasCrank = (flags & 0x02) !== 0;
+
   if (hasWheel) {
+    currentWheelRev =
+      (bytes[offset] |
+        (bytes[offset + 1] << 8) |
+        (bytes[offset + 2] << 16) |
+        (bytes[offset + 3] << 24)) >>> 0;
+    currentWheelTime = (bytes[offset + 4] | (bytes[offset + 5] << 8)) >>> 0;
     offset += 6;
+
+    if (prev && prev.wheelTime !== currentWheelTime) {
+      const revDiff = (currentWheelRev - prev.wheelRev) >>> 0;
+      let timeDiff = (currentWheelTime - prev.wheelTime) & 0xffff;
+      if (timeDiff < 0) timeDiff += 0x10000;
+
+      if (timeDiff > 0 && revDiff >= 0) {
+        const timeSec = timeDiff / 1024;
+        const circumference = 2.096; // 700x23c default
+        speed = (revDiff * circumference) / timeSec;
+      }
+    }
   }
+
   if (hasCrank) {
-    cadence = bytes[offset] | (bytes[offset + 1] << 8);
+    currentCrankRev = (bytes[offset] | (bytes[offset + 1] << 8)) >>> 0;
+    currentCrankTime = (bytes[offset + 2] | (bytes[offset + 3] << 8)) >>> 0;
+    offset += 4;
+
+    if (prev && prev.crankTime !== currentCrankTime) {
+      const revDiff = (currentCrankRev - prev.crankRev) & 0xffff;
+      let timeDiff = (currentCrankTime - prev.crankTime) & 0xffff;
+      if (timeDiff < 0) timeDiff += 0x10000;
+
+      if (timeDiff > 0 && revDiff >= 0) {
+        const timeSec = timeDiff / 1024;
+        cadence = (revDiff / timeSec) * 60;
+      }
+    }
   }
-  return { cadence };
+
+  return {
+    speed,
+    cadence,
+    data: {
+      wheelRev: currentWheelRev,
+      wheelTime: currentWheelTime,
+      crankRev: currentCrankRev,
+      crankTime: currentCrankTime,
+    },
+  };
 }
 
 function parseHeartRateMeasurement(base64: string) {
@@ -134,14 +205,7 @@ function parseFTMSMeasurement(base64: string) {
   return { speed, incline, distance };
 }
 
-function formatPace(speedMps: number | null) {
-  if (!speedMps || speedMps <= 0) return "–";
-  const kmh = speedMps * 3.6;
-  const minutesPerKm = 60 / kmh;
-  const mins = Math.floor(minutesPerKm);
-  const secs = Math.round((minutesPerKm - mins) * 60);
-  return `${mins}:${secs.toString().padStart(2, "0")}`;
-}
+
 
 function computeRmssd(rrIntervals: number[]) {
   if (rrIntervals.length < 2) return null;
@@ -182,27 +246,30 @@ function useBleInternal() {
   const scanTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttempts = useRef(0);
   const rrHistoryRef = useRef<number[]>([]);
+  const cscDataRef = useRef<Record<string, any>>({});
 
   const [devices, setDevices] = useState<Device[]>([]);
   const [scanning, setScanning] = useState(false);
   const [connectingId, setConnectingId] = useState<string | null>(null);
-  const [connectedId, setConnectedId] = useState<string | null>(null);
-  const [connectedName, setConnectedName] = useState<string | null>(null);
+  const [connectedDevices, setConnectedDevices] = useState<Device[]>([]);
   const [autoReconnect, setAutoReconnect] = useState(true);
-  const [telemetry, setTelemetry] = useState({
-    speed: null as number | null,
-    cadence: null as number | null,
-    heartRate: null as number | null,
-    power: null as number | null,
-    rmssd: null as number | null,
-    incline: null as number | null,
-    distance: null as number | null,
+
+  const [telemetryMap, setTelemetryMap] = useState<Record<string, TelemetryData>>({});
+  const [preferredSource, setPreferredSource] = useState<Record<MetricKey, string | null>>({
+    speed: null,
+    cadence: null,
+    heartRate: null,
+    power: null,
+    rmssd: null,
+    incline: null,
+    distance: null,
   });
-  const [activeServices, setActiveServices] = useState<string[]>([]);
+
+  const [activeServicesMap, setActiveServicesMap] = useState<Record<string, string[]>>({});
   const [logs, setLogs] = useState<string[]>([]);
 
-  const resetTelemetry = useCallback(() => {
-    setTelemetry({
+  const telemetry = useMemo(() => {
+    const result: TelemetryData = {
       speed: null,
       cadence: null,
       heartRate: null,
@@ -210,7 +277,64 @@ function useBleInternal() {
       rmssd: null,
       incline: null,
       distance: null,
+    };
+    (Object.keys(preferredSource) as MetricKey[]).forEach((key) => {
+      const sourceId = preferredSource[key];
+      if (sourceId && telemetryMap[sourceId]) {
+        result[key] = telemetryMap[sourceId][key];
+      }
     });
+    return result;
+  }, [telemetryMap, preferredSource]);
+
+  const updateDeviceTelemetry = useCallback((deviceId: string, delta: Partial<TelemetryData>) => {
+    setTelemetryMap((prev) => {
+      const current = prev[deviceId] || {
+        speed: null,
+        cadence: null,
+        heartRate: null,
+        power: null,
+        rmssd: null,
+        incline: null,
+        distance: null,
+      };
+      return {
+        ...prev,
+        [deviceId]: { ...current, ...delta },
+      };
+    });
+
+    // Auto-map empty sources
+    setPreferredSource((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      (Object.keys(delta) as MetricKey[]).forEach((key) => {
+        if (!next[key]) {
+          next[key] = deviceId;
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, []);
+
+  const setPreferredSourceHelper = useCallback((metric: MetricKey, deviceId: string | null) => {
+    setPreferredSource((prev) => ({
+      ...prev,
+      [metric]: deviceId,
+    }));
+  }, []);
+
+  const resetTelemetry = useCallback((deviceId?: string) => {
+    if (deviceId) {
+      setTelemetryMap((prev) => {
+        const next = { ...prev };
+        delete next[deviceId];
+        return next;
+      });
+    } else {
+      setTelemetryMap({});
+    }
   }, []);
 
   const appendLog = useCallback((message: string) => {
@@ -227,11 +351,14 @@ function useBleInternal() {
 
   const safeBleCall = useCallback(
     async <T,>(fn: () => Promise<T>): Promise<T | null> => {
-      if (destroyedRef.current) return null;
+      if (destroyedRef.current || !manager.current) return null;
       try {
         return await fn();
       } catch (e: any) {
-        if (e?.message?.includes("BleManager was destroyed")) return null;
+        const msg = e?.message?.toLowerCase() || "";
+        if (msg.includes("destroyed") || msg.includes("deallocated")) {
+          return null;
+        }
         throw e;
       }
     },
@@ -247,10 +374,16 @@ function useBleInternal() {
       reconnectTimeoutRef.current && clearTimeout(reconnectTimeoutRef.current);
       scanTimeoutRef.current && clearTimeout(scanTimeoutRef.current);
       try {
+        manager.current?.stopDeviceScan();
+      } catch {
+        // ignore
+      }
+      try {
         manager.current?.destroy();
       } catch {
-        // may already be destroyed
+        // ignore
       }
+      manager.current = null;
     };
   }, [cleanupSubscriptions]);
 
@@ -283,6 +416,9 @@ function useBleInternal() {
 
       if (error) {
         setScanning(false);
+        if (error.message.toLowerCase().includes("destroyed") || destroyedRef.current) {
+          return;
+        }
         Alert.alert("Scan error", error.message);
         return;
       }
@@ -297,8 +433,12 @@ function useBleInternal() {
     });
 
     scanTimeoutRef.current = setTimeout(() => {
-      if (destroyedRef.current) return;
-      manager.current?.stopDeviceScan();
+      if (destroyedRef.current || !manager.current) return;
+      try {
+        manager.current.stopDeviceScan();
+      } catch {
+        // ignore
+      }
       setScanning(false);
     }, 10000);
   }, [scanning]);
@@ -324,34 +464,43 @@ function useBleInternal() {
   }, [autoReconnect, appendLog]);
 
   const disconnect = useCallback(
-    async (manual = true) => {
-      if (!connectedId) return;
-
-      if (manual) {
-        manualDisconnectRef.current = true;
-        reconnectAttempts.current = 0;
-        reconnectTimeoutRef.current && clearTimeout(reconnectTimeoutRef.current);
-      }
-
-      cleanupSubscriptions();
+    async (deviceId: string) => {
+      cleanupSubscriptions(); // Note: in multi-device this might need more refinement, but for now we follow old logic
 
       try {
         if (manager.current) {
           await safeBleCall(() =>
-            manager.current!.cancelDeviceConnection(connectedId),
+            manager.current!.cancelDeviceConnection(deviceId),
           );
         }
-        appendLog(`Disconnected from ${connectedName ?? connectedId}`);
+        const dev = connectedDevices.find(d => d.id === deviceId);
+        appendLog(`Disconnected from ${dev?.name ?? deviceId}`);
       } catch {
         // ignore
       }
 
-      setConnectedId(null);
-      setConnectedName(null);
-      resetTelemetry();
-      setActiveServices([]);
+      setConnectedDevices((prev) => prev.filter((d) => d.id !== deviceId));
+      resetTelemetry(deviceId);
+      setActiveServicesMap((prev) => {
+        const next = { ...prev };
+        delete next[deviceId];
+        return next;
+      });
+      
+      // Cleanup sources if they pointed to this device
+      setPreferredSource(prev => {
+        const next = {...prev};
+        let changed = false;
+        (Object.keys(next) as MetricKey[]).forEach(k => {
+          if (next[k] === deviceId) {
+            next[k] = null;
+            changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
     },
-    [connectedId, connectedName, cleanupSubscriptions, resetTelemetry, safeBleCall, appendLog],
+    [connectedDevices, cleanupSubscriptions, resetTelemetry, safeBleCall, appendLog],
   );
 
   const subscribeToTelemetry = useCallback(
@@ -364,16 +513,18 @@ function useBleInternal() {
         handler: (base64: string) => void,
         serviceLabel: string,
       ) => {
-        const key = `${service}:${characteristic}`;
+        const key = `${deviceId}:${service}:${characteristic}`;
         subscriptions.current[key] = manager.current?.monitorCharacteristicForDevice(
           deviceId,
           service,
           characteristic,
           (error, characteristic) => {
             if (error || !characteristic?.value) return;
-            setActiveServices((prev) =>
-              prev.includes(serviceLabel) ? prev : [...prev, serviceLabel],
-            );
+            setActiveServicesMap((prev) => {
+              const current = prev[deviceId] || [];
+              if (current.includes(serviceLabel)) return prev;
+              return { ...prev, [deviceId]: [...current, serviceLabel] };
+            });
             handler(characteristic.value);
           },
         );
@@ -384,8 +535,8 @@ function useBleInternal() {
         "00002a53-0000-1000-8000-00805f9b34fb",
         (value) => {
           const { speed, cadence } = parseRSCMeasurement(value);
-          setTelemetry((prev) => ({ ...prev, speed, cadence }));
-          appendLog(`RSC ⇒ speed=${speed.toFixed(2)} m/s, cadence=${cadence} rpm`);
+          updateDeviceTelemetry(deviceId, { speed, cadence });
+          appendLog(`[${deviceId}] RSC ⇒ speed=${speed.toFixed(2)} m/s, cadence=${cadence} rpm`);
         },
         "Running Speed/Cadence",
       );
@@ -394,9 +545,22 @@ function useBleInternal() {
         "00001816-0000-1000-8000-00805f9b34fb",
         "00002a5b-0000-1000-8000-00805f9b34fb",
         (value) => {
-          const { cadence } = parseCSCMeasurement(value);
-          setTelemetry((prev) => ({ ...prev, cadence: cadence ?? prev.cadence }));
-          if (cadence != null) appendLog(`CSC ⇒ cadence=${cadence} rpm`);
+          const prev = cscDataRef.current[deviceId];
+          const { speed, cadence, data } = parseCSCMeasurement(value, prev);
+          cscDataRef.current[deviceId] = data;
+
+          const delta: Partial<TelemetryData> = {};
+          if (speed !== null) delta.speed = speed;
+          if (cadence !== null) delta.cadence = cadence;
+
+          if (Object.keys(delta).length > 0) {
+            updateDeviceTelemetry(deviceId, delta);
+            appendLog(
+              `[${deviceId}] CSC ⇒ ` +
+              (speed !== null ? `speed=${speed.toFixed(2)} m/s ` : "") +
+              (cadence !== null ? `cadence=${cadence.toFixed(0)} rpm` : "")
+            );
+          }
         },
         "Cycling Speed/Cadence",
       );
@@ -406,19 +570,17 @@ function useBleInternal() {
         "00002a37-0000-1000-8000-00805f9b34fb",
         (value) => {
           const { heartRate, rrIntervals } = parseHeartRateMeasurement(value);
-          setTelemetry((prev) => ({ ...prev, heartRate }));
-
+          
+          let rmssd: number | null = null;
           if (rrIntervals?.length) {
             const next = [...rrIntervals, ...rrHistoryRef.current].slice(0, 64);
             rrHistoryRef.current = next;
-            const rmssd = computeRmssd(next);
-            setTelemetry((t) => ({ ...t, rmssd }));
-            appendLog(
-              `HRV ⇒ rr=${rrIntervals.map((r) => r.toFixed(0)).join(",")} ms`,
-            );
+            rmssd = computeRmssd(next);
+            appendLog(`[${deviceId}] HRV ⇒ rr=${rrIntervals.map((r) => r.toFixed(0)).join(",")} ms`);
           } else {
-            appendLog(`HR ⇒ ${heartRate} bpm`);
+            appendLog(`[${deviceId}] HR ⇒ ${heartRate} bpm`);
           }
+          updateDeviceTelemetry(deviceId, { heartRate, rmssd });
         },
         "Heart Rate",
       );
@@ -428,8 +590,8 @@ function useBleInternal() {
         "00002a63-0000-1000-8000-00805f9b34fb",
         (value) => {
           const { power } = parseCyclingPowerMeasurement(value);
-          setTelemetry((prev) => ({ ...prev, power }));
-          appendLog(`Power ⇒ ${power} W`);
+          updateDeviceTelemetry(deviceId, { power });
+          appendLog(`[${deviceId}] Power ⇒ ${power} W`);
         },
         "Cycling Power",
       );
@@ -440,14 +602,9 @@ function useBleInternal() {
         "00002acd-0000-1000-8000-00805f9b34fb",
         (value) => {
           const { speed, incline, distance } = parseFTMSMeasurement(value);
-          setTelemetry((prev) => ({
-            ...prev,
-            speed,
-            incline: incline ?? prev.incline,
-            distance: distance ?? prev.distance,
-          }));
+          updateDeviceTelemetry(deviceId, { speed, incline, distance });
           appendLog(
-            `FTMS ⇒ speed=${speed.toFixed(2)} m/s` +
+            `[${deviceId}] FTMS ⇒ speed=${speed.toFixed(2)} m/s` +
             (incline != null ? `, incline=${incline.toFixed(2)}%` : "") +
             (distance != null ? `, distance=${distance.toFixed(1)}m` : ""),
           );
@@ -455,7 +612,7 @@ function useBleInternal() {
         "Treadmill",
       );
     },
-    [appendLog, cleanupSubscriptions],
+    [appendLog, cleanupSubscriptions, updateDeviceTelemetry],
   );
 
   const connect = useCallback(
@@ -474,10 +631,11 @@ function useBleInternal() {
             ?.discoverAllServicesAndCharacteristics(),
         );
 
-        setConnectedId(connected?.id ?? null);
-        setConnectedName(device.name ?? device.id);
-        resetTelemetry();
-        setActiveServices([]);
+        setConnectedDevices((prev) => {
+          if (prev.some(d => d.id === device.id)) return prev;
+          return [...prev, device];
+        });
+        resetTelemetry(connected?.id);
         appendLog(`Connected to ${device.name ?? device.id}`);
 
         if (connected?.id) {
@@ -486,7 +644,7 @@ function useBleInternal() {
           subscriptions.current[`disconnect:${connected.id}`] =
             manager.current?.onDeviceDisconnected(connected.id, () => {
               appendLog(`Unexpected disconnect from ${device.name ?? device.id}`);
-              setConnectedId(null);
+              setConnectedDevices((prev) => prev.filter(d => d.id !== device.id));
               scheduleReconnect();
             });
         }
@@ -510,32 +668,35 @@ function useBleInternal() {
       devices,
       scanning,
       connectingId,
-      connectedId,
-      connectedName,
+      connectedDevices,
       autoReconnect,
       telemetry,
-      activeServices,
+      telemetryMap,
+      preferredSource,
+      activeServicesMap,
       logs,
       startScan,
       connect,
       disconnect,
       setAutoReconnect,
-      formatPace,
+      setPreferredSource: setPreferredSourceHelper,
     }),
     [
       devices,
       scanning,
       connectingId,
-      connectedId,
-      connectedName,
+      connectedDevices,
       autoReconnect,
       telemetry,
-      activeServices,
+      telemetryMap,
+      preferredSource,
+      activeServicesMap,
       logs,
       startScan,
       connect,
       disconnect,
       setAutoReconnect,
+      setPreferredSourceHelper,
     ],
   );
 
