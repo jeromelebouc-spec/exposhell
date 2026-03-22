@@ -80,17 +80,45 @@ export default function DebugScreen() {
           const companyId = bytes[0] | (bytes[1] << 8);
           companyName = getCompanyName(companyId);
 
-          // Deep-dive: Apple Specific parsing
-          if (companyId === 0x004c && bytes.length >= 3) {
+          // Deep-dive: Custom Manufacturer Parsers
+          if (bytes.length >= 3) {
             const type = bytes[2];
-            switch (type) {
-              case 0x02: extraData = "iBeacon"; break;
-              case 0x07: extraData = "AirPods / Proximity Pairing"; break;
-              case 0x09: extraData = "AirDrop / OS X Info"; break;
-              case 0x10: extraData = "Nearby Action (AirPods / Apple TV)"; break;
-              case 0x12: extraData = "Find My Network (AirTag / Tracker)"; break;
-              case 0x16: extraData = "Nearby Info"; break;
-              default: extraData = `Apple Type 0x${type.toString(16).padStart(2, "0")}`;
+            
+            // Apple, Inc. (0x004C)
+            if (companyId === 0x004c) {
+              switch (type) {
+                case 0x02: extraData = "iBeacon"; break;
+                case 0x07: extraData = "AirPods / Proximity Pairing"; break;
+                case 0x09: extraData = "AirDrop / OS X Info"; break;
+                case 0x10: extraData = "Nearby Action (AirPods / Apple TV)"; break;
+                case 0x12: extraData = "Find My Network (AirTag / Tracker)"; break;
+                case 0x16: extraData = "Nearby Info"; break;
+                default: extraData = `Apple Type 0x${type.toString(16).padStart(2, "0")}`;
+              }
+            } 
+            // Microsoft (0x0006)
+            else if (companyId === 0x0006) {
+              switch (type) {
+                case 0x03: extraData = "Swift Pair (Accessory)"; break;
+                case 0x01: extraData = "Connected Devices Platform (CDP)"; break;
+                default: extraData = `MS Type 0x${type.toString(16).padStart(2, "0")}`;
+              }
+            } 
+            // Google (0x00E0)
+            else if (companyId === 0x00e0) {
+              switch (type) {
+                case 0x2b: extraData = "Fast Pair / Nearby Share"; break;
+                case 0x00: extraData = "Chromecast / Google Home"; break;
+                default: extraData = `Google Type 0x${type.toString(16).padStart(2, "0")}`;
+              }
+            }
+            // Samsung (0x0075)
+            else if (companyId === 0x0075) {
+              switch (type) {
+                case 0x01: extraData = "SmartThings Find (SmartTag)"; break;
+                case 0x02: extraData = "Galaxy Buds / Watch Proximity"; break;
+                default: extraData = `Samsung Type 0x${type.toString(16).padStart(2, "0")}`;
+              }
             }
           }
         }
