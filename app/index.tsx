@@ -49,14 +49,6 @@ export default function Index() {
 
   const [view, setView] = useState<"list" | "video">("list");
 
-  // keep showing video only when user explicitly switches; always go back to
-  // list when disconnected
-  useEffect(() => {
-    if (!isConnected && view === "video") {
-      setView("list");
-    }
-  }, [isConnected, view]);
-
   useEffect(() => {
     if (view !== "video") {
       // Use portrait for the main BLE list view.
@@ -178,7 +170,7 @@ export default function Index() {
       {/* button to manually reveal the video player */}
       {/** precompute because TS sometimes narrows view in JSX */}
       {(() => {
-        const showVideoButton = isConnected && view === "list";
+        const showVideoButton = view === "list";
         return showVideoButton ? (
           <TouchableOpacity style={styles.scanButton} onPress={() => setView("video")}>
             <Text style={styles.scanButtonText}>Show video</Text>
