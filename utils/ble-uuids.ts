@@ -83,3 +83,30 @@ export function getServiceNameFromUUID(uuid: string): string {
 
   return uuid;
 }
+
+// Common Bluetooth SIG Company Identifiers (First 2 bytes of Manufacturer Data)
+export const COMPANY_IDENTIFIERS: Record<number, string> = {
+  0x0006: "Microsoft",
+  0x000f: "Broadcom",
+  0x004c: "Apple, Inc.",
+  0x0059: "Nordic Semiconductor ASA",
+  0x0075: "Samsung Electronics Co. Ltd.",
+  0x0078: "Nike, Inc.",
+  0x0087: "Garmin International, Inc.",
+  0x00d2: "Dialog Semiconductor",
+  0x00e0: "Google",
+  0x0118: "Wahoo Fitness, LLC",
+  0x0157: "Xiaomi Inc.",
+  0x0177: "Bose Corporation",
+  0x0211: "Peloton Interactive Inc.",
+  0x02e5: "Polar Electro Oy",
+  0x0001: "Nokia",
+  0x0002: "Intel",
+};
+
+export function getCompanyName(id: number): string {
+  if (COMPANY_IDENTIFIERS[id]) {
+    return COMPANY_IDENTIFIERS[id];
+  }
+  return `Unknown Company (0x${id.toString(16).padStart(4, "0")})`;
+}

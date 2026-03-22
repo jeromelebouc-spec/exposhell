@@ -9,7 +9,8 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Device, BleManager } from "react-native-ble-plx";
 import { getBleManager, requestBlePermissions } from "../store/ble-store";
-import { getServiceNameFromUUID } from "../utils/ble-uuids";
+import { getServiceNameFromUUID, getCompanyName } from "../utils/ble-uuids";
+import { base64ToBytes } from "../utils/ble-parsers";
 
 export default function DebugScreen() {
   const [devices, setDevices] = useState<Device[]>([]);
@@ -39,7 +40,6 @@ export default function DebugScreen() {
         setDevices((prev) => {
           const idx = prev.findIndex((d) => d.id === device.id);
           if (idx >= 0) {
-            // Update existing (e.g., if RSSI changes)
             const next = [...prev];
             next[idx] = device;
             return next;
@@ -69,6 +69,20 @@ export default function DebugScreen() {
   }, []);
 
   const renderItem = ({ item }: { item: Device }) => {
+    let companyName = null;
+    if (item.manufacturerData) {
+      try {
+        const bytes = base64ToBytes(item.manufacturerData);
+        // Company ID is the first two bytes of manufacturer data (little-endian)
+        if (bytes.length >= 2) {
+          const companyId = bytes[0] | (bytes[1] << 8);
+          companyName = getCompanyName(companyId);
+        }
+      } catch (e) {
+        console.warn("Failed to parse manufacturer data", e);
+      }
+    }
+
     return (
       <View style={styles.deviceCard}>
         <View style={styles.headerRow}>
@@ -79,6 +93,14 @@ export default function DebugScreen() {
         </View>
         <Text style={styles.deviceId}>{item.id}</Text>
         
+        {/* Manufacturer Data */}
+        {companyName && (
+          <View style={styles.manufacturerContainer}>
+            <Text style={styles.manufacturerLabel}>Manufacturer:</Text>
+            <Text style={styles.manufacturerValue}>{companyName}</Text>
+          </View>
+        )}
+
         <View style={styles.uuidContainer}>
           {item.serviceUUIDs && item.serviceUUIDs.length > 0 ? (
             item.serviceUUIDs.map((uuid) => (
@@ -222,5 +244,24 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#999",
     fontStyle: "italic",
+  },
+  manufacturerContainer: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#eee",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  manufacturerLabel: {
+    fontSize: 12,
+    color: "#8e8e93",
+    fontWeight: "600",
+  },
+  manufacturerValue: {
+    fontSize: 13,
+    color: "#007AFF",
+    fontWeight: "600",
   },
 });
