@@ -66,9 +66,13 @@ export function YoutubeProvider({ children }: { children: React.ReactNode }) {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // expo-auth-session Google provider — handles PKCE + auth code flow correctly
+  // Android client IDs support custom scheme redirect URIs (unlike Web client IDs).
+  // Create one at Google Cloud Console → Credentials → OAuth client ID → Android.
+  // You'll need: package name (com.yourname.exposhell) + SHA-1 fingerprint.
+  // Get your debug SHA-1: keytool -list -v -keystore ~/.android/debug.keystore
+  //                       -alias androiddebugkey -storepass android -keypass android
   const [request, response, promptAsync] = Google.useAuthRequest({
-    clientId: CLIENT_ID,
+    androidClientId: CLIENT_ID,
     scopes: ["https://www.googleapis.com/auth/youtube.readonly"],
   });
 
