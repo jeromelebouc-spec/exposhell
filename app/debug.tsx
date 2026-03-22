@@ -70,6 +70,8 @@ export default function DebugScreen() {
 
   const renderItem = ({ item }: { item: Device }) => {
     let companyName = null;
+    let extraData = null;
+
     if (item.manufacturerData) {
       try {
         const bytes = base64ToBytes(item.manufacturerData);
@@ -77,6 +79,20 @@ export default function DebugScreen() {
         if (bytes.length >= 2) {
           const companyId = bytes[0] | (bytes[1] << 8);
           companyName = getCompanyName(companyId);
+
+          // Deep-dive: Apple Specific parsing
+          if (companyId === 0x004c && bytes.length >= 3) {
+            const type = bytes[2];
+            switch (type) {
+              case 0x02: extraData = "iBeacon"; break;
+              case 0x07: extraData = "AirPods / Proximity Pairing"; break;
+              case 0x09: extraData = "AirDrop / OS X Info"; break;
+              case 0x10: extraData = "Nearby Action (AirPods / Apple TV)"; break;
+              case 0x12: extraData = "Find My Network (AirTag / Tracker)"; break;
+              case 0x16: extraData = "Nearby Info"; break;
+              default: extraData = `Apple Type 0x${type.toString(16).padStart(2, "0")}`;
+            }
+          }
         }
       } catch (e) {
         console.warn("Failed to parse manufacturer data", e);
@@ -97,7 +113,10 @@ export default function DebugScreen() {
         {companyName && (
           <View style={styles.manufacturerContainer}>
             <Text style={styles.manufacturerLabel}>Manufacturer:</Text>
-            <Text style={styles.manufacturerValue}>{companyName}</Text>
+            <View>
+              <Text style={styles.manufacturerValue}>{companyName}</Text>
+              {extraData && <Text style={styles.extraDataText}>↳ {extraData}</Text>}
+            </View>
           </View>
         )}
 
@@ -263,5 +282,11 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: "#007AFF",
     fontWeight: "600",
+  },
+  extraDataText: {
+    fontSize: 12,
+    color: "#ff9500", // Apple-orange-ish highlight
+    fontWeight: "600",
+    marginTop: 2,
   },
 });
