@@ -1,5 +1,6 @@
 import { useBle } from "@/context/ble-context";
 import { formatPace } from "@/utils/formatters";
+import { useRouter, useLocalSearchParams } from "expo-router";
 import * as ScreenOrientation from "expo-screen-orientation";
 import React, { useEffect, useMemo, useState } from "react";
 import {
@@ -36,6 +37,15 @@ export default function Index() {
   } = useBle();
 
   const isConnected = connectedDevices.length > 0;
+  const router = useRouter();
+
+  // videoId comes back from the youtube picker screen via route params
+  const params = useLocalSearchParams<{ videoId?: string }>();
+  const [videoId, setVideoId] = useState("dQw4w9WgXcQ");
+
+  useEffect(() => {
+    if (params.videoId) setVideoId(params.videoId);
+  }, [params.videoId]);
 
   const [view, setView] = useState<"list" | "video">("list");
 
@@ -104,7 +114,7 @@ export default function Index() {
         <YoutubePlayer
           height={windowHeight}
           play={true}
-          videoId="dQw4w9WgXcQ"
+          videoId={videoId}
           webViewStyle={styles.webview}
           webViewProps={{
             allowsInlineMediaPlayback: true,
@@ -169,6 +179,13 @@ export default function Index() {
           </TouchableOpacity>
         ) : null;
       })()}
+
+      <TouchableOpacity
+        style={[styles.scanButton, styles.youtubeButton]}
+        onPress={() => router.push("/youtube")}
+      >
+        <Text style={styles.scanButtonText}>📺  Pick YouTube video</Text>
+      </TouchableOpacity>
 
       {isConnected ? (
         <TouchableOpacity style={styles.disconnectButton} onPress={() => connectedDevices.forEach(d => disconnect(d.id))}>
@@ -307,6 +324,9 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: "center",
     marginBottom: 16,
+  },
+  youtubeButton: {
+    backgroundColor: "#FF0000",
   },
   scanButtonText: {
     color: "#fff",

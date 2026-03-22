@@ -1,10 +1,13 @@
 import { Stack } from "expo-router";
 import { BleProvider } from "@/context/ble-context";
+import { YoutubeProvider } from "@/context/youtube-context";
 
 export default function RootLayout() {
   return (
     <BleProvider>
-      <Stack screenOptions={{ headerShown: false }} />
+      <YoutubeProvider>
+        <Stack screenOptions={{ headerShown: false }} />
+      </YoutubeProvider>
     </BleProvider>
   );
 }
