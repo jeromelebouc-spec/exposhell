@@ -40,7 +40,6 @@
       ]
     },
     "plugins": [
-      "expo-share-intent",
       "expo-dev-client",
       "expo-sensors",
       "expo-location",
