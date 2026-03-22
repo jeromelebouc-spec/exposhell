@@ -58,7 +58,8 @@
           "bluetoothAlwaysPermission": "Allow $(PRODUCT_NAME) to use Bluetooth even when you are not using the app."
         }
       ],
-      "expo-asset"
+      "expo-asset",
+      "@react-native-google-signin/google-signin"
     ],
     "extra": {
       "eas": {

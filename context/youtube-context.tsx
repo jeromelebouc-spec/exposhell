@@ -1,7 +1,4 @@
-import * as AuthSession from "expo-auth-session";
-import * as Google from "expo-auth-session/providers/google";
 import * as SecureStore from "expo-secure-store";
-import * as WebBrowser from "expo-web-browser";
 import React, {
   createContext,
   useCallback,
@@ -10,18 +7,19 @@ import React, {
   useMemo,
   useState,
 } from "react";
+import { GoogleSignin } from "@react-native-google-signin/google-signin";
 
 // ─────────────────────────────────────────
 // Set EXPO_PUBLIC_GOOGLE_CLIENT_ID in your .env file.
-// This must be an OAuth 2.0 Client ID (ends in .apps.googleusercontent.com),
-// NOT an API key. Create one at:
-//   Google Cloud Console → APIs & Services → Credentials → Create Credentials
-//   → OAuth client ID → iOS (or Android)
-// Also enable: YouTube Data API v3, scope: youtube.readonly
+// This MUST be a "Web application" Client ID from Google Cloud Console.
+// The matching "Android" client ID must also exist in the same project.
 // ─────────────────────────────────────────
 const CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID ?? "";
 
-WebBrowser.maybeCompleteAuthSession();
+GoogleSignin.configure({
+  webClientId: CLIENT_ID,
+  scopes: ["https://www.googleapis.com/auth/youtube.readonly"],
+});
 
 const TOKEN_KEY = "yt_access_token";
 
@@ -66,58 +64,59 @@ export function YoutubeProvider({ children }: { children: React.ReactNode }) {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Android client IDs support custom scheme redirect URIs (unlike Web client IDs).
-  // Create one at Google Cloud Console → Credentials → OAuth client ID → Android.
-  // You'll need: package name (com.yourname.exposhell) + SHA-1 fingerprint.
-  // Get your debug SHA-1: keytool -list -v -keystore ~/.android/debug.keystore
-  //                       -alias androiddebugkey -storepass android -keypass android
-  const [request, response, promptAsync] = Google.useAuthRequest({
-    androidClientId: CLIENT_ID,
-    scopes: ["https://www.googleapis.com/auth/youtube.readonly"],
-  });
-
   // Restore token on mount
   useEffect(() => {
     (async () => {
       try {
         const stored = await SecureStore.getItemAsync(TOKEN_KEY);
-        if (stored) setAccessToken(stored);
+        if (stored) {
+          // Check if silently signed in
+          const currentUser = await GoogleSignin.signInSilently();
+          if (currentUser) {
+            const tokens = await GoogleSignin.getTokens();
+            if (tokens.accessToken) {
+              setAccessToken(tokens.accessToken);
+              SecureStore.setItemAsync(TOKEN_KEY, tokens.accessToken).catch(() => {});
+            } else {
+              setAccessToken(stored);
+            }
+          } else {
+            setAccessToken(stored);
+          }
+        }
       } catch {
-        // ignore
+        // ignore errors during silent sign in
       } finally {
         setIsLoading(false);
       }
     })();
   }, []);
 
-  // Handle OAuth response
-  useEffect(() => {
-    if (response?.type === "success") {
-      const token = response.authentication?.accessToken;
-      if (token) {
-        SecureStore.setItemAsync(TOKEN_KEY, token).catch(() => { });
-        setAccessToken(token);
-      }
-    }
-  }, [response]);
-
   const signIn = useCallback(async () => {
-    if (!request) return;
-    await promptAsync();
-  }, [request, promptAsync]);
+    try {
+      await GoogleSignin.hasPlayServices();
+      await GoogleSignin.signIn();
+      const tokens = await GoogleSignin.getTokens();
+      if (tokens.accessToken) {
+        setAccessToken(tokens.accessToken);
+        SecureStore.setItemAsync(TOKEN_KEY, tokens.accessToken).catch(() => {});
+      }
+    } catch (error: any) {
+      console.warn("Google Signin Error:", error);
+      throw error;
+    }
+  }, []);
 
   const signOut = useCallback(async () => {
-    if (accessToken) {
-      try {
-        await fetch(
-          `https://oauth2.googleapis.com/revoke?token=${accessToken}`,
-          { method: "POST" }
-        );
-      } catch {
-        // ignore revocation error
+    try {
+      if (accessToken) {
+         await GoogleSignin.revokeAccess();
       }
+      await GoogleSignin.signOut();
+    } catch (error) {
+       console.warn("Error signing out", error);
     }
-    await SecureStore.deleteItemAsync(TOKEN_KEY).catch(() => { });
+    await SecureStore.deleteItemAsync(TOKEN_KEY).catch(() => {});
     setAccessToken(null);
   }, [accessToken]);
 
