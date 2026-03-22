@@ -1,4 +1,5 @@
 import * as AuthSession from "expo-auth-session";
+import * as Google from "expo-auth-session/providers/google";
 import * as SecureStore from "expo-secure-store";
 import * as WebBrowser from "expo-web-browser";
 import React, {
@@ -12,10 +13,13 @@ import React, {
 
 // ─────────────────────────────────────────
 // Set EXPO_PUBLIC_GOOGLE_CLIENT_ID in your .env file.
-// See .env.example for instructions.
+// This must be an OAuth 2.0 Client ID (ends in .apps.googleusercontent.com),
+// NOT an API key. Create one at:
+//   Google Cloud Console → APIs & Services → Credentials → Create Credentials
+//   → OAuth client ID → iOS (or Android)
+// Also enable: YouTube Data API v3, scope: youtube.readonly
 // ─────────────────────────────────────────
-export const GOOGLE_CLIENT_ID =
-  process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID ?? "";
+const CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID ?? "";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -58,29 +62,15 @@ export function useYoutube() {
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
 
-const DISCOVERY = {
-  authorizationEndpoint: "https://accounts.google.com/o/oauth2/v2/auth",
-  tokenEndpoint: "https://oauth2.googleapis.com/token",
-  revocationEndpoint: "https://oauth2.googleapis.com/revoke",
-};
-
-const SCOPES = ["https://www.googleapis.com/auth/youtube.readonly"];
-
 export function YoutubeProvider({ children }: { children: React.ReactNode }) {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  const redirectUri = AuthSession.makeRedirectUri({ scheme: "exposhell" });
-
-  const [request, response, promptAsync] = AuthSession.useAuthRequest(
-    {
-      clientId: GOOGLE_CLIENT_ID,
-      redirectUri,
-      scopes: SCOPES,
-      responseType: "token",
-    },
-    DISCOVERY
-  );
+  // expo-auth-session Google provider — handles PKCE + auth code flow correctly
+  const [request, response, promptAsync] = Google.useAuthRequest({
+    clientId: CLIENT_ID,
+    scopes: ["https://www.googleapis.com/auth/youtube.readonly"],
+  });
 
   // Restore token on mount
   useEffect(() => {
@@ -99,9 +89,11 @@ export function YoutubeProvider({ children }: { children: React.ReactNode }) {
   // Handle OAuth response
   useEffect(() => {
     if (response?.type === "success") {
-      const token = (response.params as any).access_token as string;
-      SecureStore.setItemAsync(TOKEN_KEY, token).catch(() => { });
-      setAccessToken(token);
+      const token = response.authentication?.accessToken;
+      if (token) {
+        SecureStore.setItemAsync(TOKEN_KEY, token).catch(() => { });
+        setAccessToken(token);
+      }
     }
   }, [response]);
 
