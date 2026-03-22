@@ -5,10 +5,10 @@ import {
   FlatList,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { Device, BleManager } from "react-native-ble-plx";
-import { getBleManager } from "../store/ble-store";
+import { getBleManager, requestBlePermissions } from "../store/ble-store";
 import { getServiceNameFromUUID } from "../utils/ble-uuids";
 
 export default function DebugScreen() {
@@ -19,6 +19,12 @@ export default function DebugScreen() {
   const startScan = async () => {
     const manager = getBleManager();
     if (!manager || scanning) return;
+
+    const hasPermissions = await requestBlePermissions();
+    if (!hasPermissions) {
+      console.warn("Missing BLE Permissions");
+      return;
+    }
 
     setDevices([]);
     setScanning(true);

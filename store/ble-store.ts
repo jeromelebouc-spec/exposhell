@@ -58,10 +58,13 @@ const lastDevicesRef: Record<string, Device> = {};
 const cscDataRef: Record<string, any> = {};
 
 export function getBleManager() {
+  if (!manager) {
+    manager = new BleManager();
+  }
   return manager;
 }
 
-async function requestBlePermissions() {
+export async function requestBlePermissions() {
   if (Platform.OS !== "android") return true;
 
   const permissions = [
