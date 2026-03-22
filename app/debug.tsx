@@ -135,7 +135,14 @@ export default function DebugScreen() {
             {item.rssi != null ? `${item.rssi} dBm` : "N/A"}
           </Text>
         </View>
-        <Text style={styles.deviceId}>{item.id}</Text>
+        <View style={styles.subHeaderRow}>
+          <Text style={styles.deviceId}>{item.id}</Text>
+          <View style={[styles.connectBadge, item.isConnectable ? styles.badgeConnectable : styles.badgeBroadcast]}>
+            <Text style={styles.badgeText}>
+              {item.isConnectable ? "Connectable" : "Broadcast Only"}
+            </Text>
+          </View>
+        </View>
         
         {/* Manufacturer Data */}
         {companyName && (
@@ -316,5 +323,28 @@ const styles = StyleSheet.create({
     color: "#ff9500", // Apple-orange-ish highlight
     fontWeight: "600",
     marginTop: 2,
+  },
+  subHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  connectBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  badgeConnectable: {
+    backgroundColor: "#e8f5e9", // light green
+  },
+  badgeBroadcast: {
+    backgroundColor: "#f5f5f5", // light gray
+  },
+  badgeText: {
+    fontSize: 10,
+    fontWeight: "600",
+    color: "#555",
   },
 });
