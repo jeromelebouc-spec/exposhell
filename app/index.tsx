@@ -1,6 +1,5 @@
-import { useBle } from "@/context/ble-context";
 import { formatPace } from "@/utils/formatters";
-import { useRouter, useLocalSearchParams } from "expo-router";
+import { Link, useRouter, useLocalSearchParams } from "expo-router";
 import * as ScreenOrientation from "expo-screen-orientation";
 import React, { useEffect, useMemo, useState } from "react";
 import {
@@ -14,31 +13,13 @@ import {
 } from "react-native";
 import { Device } from "react-native-ble-plx";
 import YoutubePlayer from "react-native-youtube-iframe";
+import { useBleStore } from "../store/ble-store";
 
-
+const { width } = Dimensions.get("window");
 
 export default function Index() {
-  const {
-    devices,
-    scanning,
-    connectingId,
-    connectedDevices,
-    autoReconnect,
-    telemetry,
-    telemetryMap,
-    preferredSource,
-    activeServicesMap,
-    logs,
-    startScan,
-    connect,
-    disconnect,
-    setAutoReconnect,
-    setPreferredSource,
-  } = useBle();
-
-  const isConnected = connectedDevices.length > 0;
   const router = useRouter();
-
+  
   // videoId comes back from the youtube picker screen via route params
   const params = useLocalSearchParams<{ videoId?: string }>();
   const [videoId, setVideoId] = useState("dQw4w9WgXcQ");
@@ -46,6 +27,25 @@ export default function Index() {
   useEffect(() => {
     if (params.videoId) setVideoId(params.videoId);
   }, [params.videoId]);
+
+  // Zustand selectors
+  const scanning = useBleStore((s) => s.scanning);
+  const startScan = useBleStore((s) => s.startScan);
+  const connectingId = useBleStore((s) => s.connectingId);
+  const devices = useBleStore((s) => s.devices);
+  const connectedDevices = useBleStore((s) => s.connectedDevices);
+  const autoReconnect = useBleStore((s) => s.autoReconnect);
+  const setAutoReconnect = useBleStore((s) => s.setAutoReconnect);
+  const telemetry = useBleStore((s) => s.telemetry);
+  const telemetryMap = useBleStore((s) => s.telemetryMap);
+  const logs = useBleStore((s) => s.logs);
+  const connect = useBleStore((s) => s.connect);
+  const disconnect = useBleStore((s) => s.disconnect);
+  const setPreferredSource = useBleStore((s) => s.setPreferredSource);
+  const preferredSource = useBleStore((s) => s.preferredSource);
+  const activeServicesMap = useBleStore((s) => s.activeServicesMap);
+
+  const isConnected = connectedDevices.length > 0;
 
   const [view, setView] = useState<"list" | "video">("list");
 
@@ -156,6 +156,12 @@ export default function Index() {
       <TouchableOpacity style={styles.scanButton} onPress={startScan}>
         <Text style={styles.scanButtonText}>{scanButtonLabel}</Text>
       </TouchableOpacity>
+
+      <Link href="/debug" asChild>
+        <TouchableOpacity style={styles.debugButton}>
+          <Text style={styles.debugButtonText}>🛠️ Wide BLE Debug Scan</Text>
+        </TouchableOpacity>
+      </Link>
 
       <TouchableOpacity
         style={[
@@ -495,6 +501,18 @@ const styles = StyleSheet.create({
   liveOverlayText: {
     color: "#fff",
     fontSize: 12,
-    marginBottom: 4,
+    fontWeight: "600",
+  },
+  debugButton: {
+    padding: 12,
+    marginTop: 12,
+    alignItems: "center",
+    backgroundColor: "#f0f0f5",
+    borderRadius: 8,
+  },
+  debugButtonText: {
+    color: "#8e8e93",
+    fontSize: 14,
+    fontWeight: "600",
   },
 });
