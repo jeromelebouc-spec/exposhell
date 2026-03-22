@@ -11,12 +11,11 @@ import React, {
 } from "react";
 
 // ─────────────────────────────────────────
-// IMPORTANT: Replace with your Google OAuth Client ID.
-// Create one at https://console.cloud.google.com → APIs & Services → Credentials.
-// Use an OAuth 2.0 Client ID of type "iOS" (for native) or "Web application".
-// Enable the "YouTube Data API v3" and add `youtube.readonly` scope.
+// Set EXPO_PUBLIC_GOOGLE_CLIENT_ID in your .env file.
+// See .env.example for instructions.
 // ─────────────────────────────────────────
-export const GOOGLE_CLIENT_ID = "AIzaSyAnSfy7083Ob-yoJheg-BZaGHTrJNgFBxM";
+export const GOOGLE_CLIENT_ID =
+  process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID ?? "";
 
 WebBrowser.maybeCompleteAuthSession();
 
