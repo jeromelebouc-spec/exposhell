@@ -6,7 +6,6 @@ import {
   Dimensions,
   FlatList,
   SafeAreaView,
-  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -138,7 +137,7 @@ export default function Index() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <ScrollView contentContainerStyle={styles.contentContainer}>
+      <View style={styles.contentContainer}>
         <Text style={styles.title}>🩺 BLE Scanner yo</Text>
         <Text style={styles.subtitle}>
         Scanning for sensors.
@@ -153,6 +152,10 @@ export default function Index() {
         onPress={() => setAutoReconnect((v) => !v)}
       >
         <Text style={styles.scanButtonText}>Auto-reconnect: {autoReconnect ? "On" : "Off"}</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity style={styles.debugButton} onPress={() => router.push('/debug')}>
+        <Text style={styles.debugButtonText}>Debug Access</Text>
       </TouchableOpacity>
 
       {isConnected ? (
@@ -220,7 +223,7 @@ export default function Index() {
         />
       </View>
 
-      </ScrollView>
+      </View>
 
       <FlatList
         style={styles.list}
@@ -281,6 +284,18 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   disconnectButtonText: {
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 16,
+  },
+  debugButton: {
+    backgroundColor: "#ff9500",
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  debugButtonText: {
     color: "#fff",
     fontWeight: "700",
     fontSize: 16,
