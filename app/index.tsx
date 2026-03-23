@@ -141,7 +141,7 @@ export default function Index() {
       <ScrollView contentContainerStyle={styles.contentContainer}>
         <Text style={styles.title}>🩺 BLE Scanner yo</Text>
         <Text style={styles.subtitle}>
-        Scanning for cycling/running speed & cadence sensors, power meters, heart rate monitors, and FTMS treadmills (10s scan).
+        Scanning for sensors.
       </Text>
 
       <TouchableOpacity style={styles.scanButton} onPress={startScan}>
