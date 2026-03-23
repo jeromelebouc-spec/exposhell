@@ -1,17 +1,19 @@
-import { Link, useRouter, useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import * as ScreenOrientation from "expo-screen-orientation";
 import React, { useEffect, useMemo, useState } from "react";
 import {
   BackHandler,
   Dimensions,
   FlatList,
+  SafeAreaView,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
-import { useBle } from "./ble-context";
 import YoutubePlayer from "react-native-youtube-iframe";
+import { useBle } from "./ble-context";
 
 export default function Index() {
   const router = useRouter();
@@ -135,9 +137,10 @@ export default function Index() {
   }
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>🩺 BLE Scanner yo</Text>
-      <Text style={styles.subtitle}>
+    <SafeAreaView style={styles.safeArea}>
+      <ScrollView contentContainerStyle={styles.contentContainer}>
+        <Text style={styles.title}>🩺 BLE Scanner yo</Text>
+        <Text style={styles.subtitle}>
         Scanning for cycling/running speed & cadence sensors, power meters, heart rate monitors, and FTMS treadmills (10s scan).
       </Text>
 
@@ -217,6 +220,8 @@ export default function Index() {
         />
       </View>
 
+      </ScrollView>
+
       <FlatList
         style={styles.list}
         data={devices}
@@ -228,11 +233,19 @@ export default function Index() {
           </Text>
         }
       />
-    </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: "#fff",
+  },
+  contentContainer: {
+    padding: 16,
+    backgroundColor: "#fff",
+  },
   container: {
     flex: 1,
     padding: 16,
